@@ -1,0 +1,9 @@
+{
+  "id": "example-video-1",
+  "title": "Утренняя практика йоги",
+  "type": "video",
+  "src": "/videos/yoga-morning.mp4",
+  "duration": "30 минут",
+  "description": "Комплекс асан для пробуждения и заряда энергией на весь день",
+  "category": "Утро"
+}

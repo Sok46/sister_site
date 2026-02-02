@@ -1,0 +1,9 @@
+{
+  "id": "example-audio-1",
+  "title": "Музыка для концентрации",
+  "type": "audio",
+  "src": "/audio/11-yoga.mp3",
+  "duration": "12 минут",
+  "description": "Аудио медитация для сосредоточения",
+  "category": "Медитация"
+}
