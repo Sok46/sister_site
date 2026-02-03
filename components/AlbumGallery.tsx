@@ -12,11 +12,14 @@ interface Photo {
 interface AlbumGalleryProps {
   albumName: string
   photos: Photo[]
+  maxVisible?: number
 }
 
-export default function AlbumGallery({ albumName, photos }: AlbumGalleryProps) {
+export default function AlbumGallery({ albumName, photos, maxVisible }: AlbumGalleryProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0)
+
+  const visiblePhotos = maxVisible ? photos.slice(0, maxVisible) : photos
 
   const openLightbox = (index: number) => {
     setCurrentPhotoIndex(index)
@@ -38,7 +41,7 @@ export default function AlbumGallery({ albumName, photos }: AlbumGalleryProps) {
   return (
     <>
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-        {photos.map((photo, index) => (
+        {visiblePhotos.map((photo, index) => (
           <div
             key={photo.name}
             className="relative aspect-square overflow-hidden rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 group cursor-pointer bg-gray-100"

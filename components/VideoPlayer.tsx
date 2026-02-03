@@ -10,9 +10,10 @@ interface VideoPlayerProps {
 
 export default function VideoPlayer({ src, title, className = '' }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
-  // Поддержка YouTube, Vimeo и прямых ссылок на видео
+  // Поддержка YouTube, Vimeo, RuTube и прямых ссылок на видео
   const isYouTube = src.includes('youtube.com') || src.includes('youtu.be')
   const isVimeo = src.includes('vimeo.com')
+  const isRuTube = src.includes('rutube.ru')
   
   if (isYouTube) {
     const videoId = src.includes('youtu.be') 
@@ -41,6 +42,28 @@ export default function VideoPlayer({ src, title, className = '' }: VideoPlayerP
           src={`https://player.vimeo.com/video/${videoId}`}
           title={title || 'Видео'}
           allow="autoplay; fullscreen; picture-in-picture"
+          allowFullScreen
+        />
+      </div>
+    )
+  }
+
+  if (isRuTube) {
+    // Ожидаем ссылку формата https://rutube.ru/video/<id>/ или с параметрами
+    const parts = src.split('/video/')[1]
+    const rawId = parts ? parts.split('/')[0].split('?')[0] : ''
+    const embedUrl = rawId
+      ? `https://rutube.ru/play/embed/${rawId}`
+      : src
+
+    return (
+      <div className={`relative w-full ${className}`} style={{ paddingBottom: '56.25%' }}>
+        <iframe
+          className="absolute top-0 left-0 w-full h-full rounded-xl"
+          src={embedUrl}
+          title={title || 'Видео'}
+          frameBorder="0"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
           allowFullScreen
         />
       </div>

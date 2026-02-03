@@ -28,11 +28,6 @@ export default function Footer() {
                 </Link>
               </li>
               <li>
-                <Link href="/family" className="hover:text-primary-400 transition-colors">
-                  Семья
-                </Link>
-              </li>
-              <li>
                 <Link href="/blog" className="hover:text-primary-400 transition-colors">
                   Блог
                 </Link>

@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { Nunito, Playfair_Display } from 'next/font/google'
+import { Nunito, Playfair_Display, Roboto } from 'next/font/google'
 import './globals.css'
 import Navigation from '@/components/Navigation'
 import Footer from '@/components/Footer'
@@ -14,6 +14,12 @@ const playfair = Playfair_Display({
   variable: '--font-playfair',
 })
 
+const roboto = Roboto({
+  subsets: ['latin', 'cyrillic'],
+  weight: ['400', '500', '700'],
+  variable: '--font-roboto',
+})
+
 export const metadata: Metadata = {
   title: 'Zoya LifePro - Йога, Питание, Семья',
   description: 'Блог о йоге, правильном питании и воспитании детей',
@@ -25,7 +31,7 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="ru" className={`${nunito.variable} ${playfair.variable}`}>
+    <html lang="ru" className={`${nunito.variable} ${playfair.variable} ${roboto.variable}`}>
       <body className="bg-gradient-to-br from-primary-50 via-white to-accent-50 min-h-screen">
         <Navigation />
         <main className="min-h-screen">

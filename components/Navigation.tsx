@@ -10,7 +10,6 @@ export default function Navigation() {
     { href: '/', label: 'Главная' },
     { href: '/yoga', label: 'Йога' },
     { href: '/nutrition', label: 'Питание' },
-    { href: '/family', label: 'Семья' },
     { href: '/blog', label: 'Блог' },
     { href: '/playlist', label: 'Плейлист' },
     { href: '/gallery', label: 'Галерея' },
@@ -28,15 +27,20 @@ export default function Navigation() {
 
           {/* Desktop Navigation */}
           <div className="hidden md:flex space-x-8">
-            {navItems.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="text-gray-700 hover:text-primary-600 font-medium transition-colors duration-200"
-              >
-                {item.label}
-              </Link>
-            ))}
+            {navItems.map((item) => {
+              const isBlog = item.href === '/blog'
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`text-gray-700 hover:text-primary-600 font-medium transition-colors duration-200 ${
+                    isBlog ? 'border-b-2 border-red-500 pb-1' : ''
+                  }`}
+                >
+                  {item.label}
+                </Link>
+              )
+            })}
           </div>
 
           {/* Mobile menu button */}

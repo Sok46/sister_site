@@ -1,7 +1,17 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { format, addDays, addMonths, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isSameDay, isBefore } from 'date-fns'
+import {
+  format,
+  addDays,
+  addMonths,
+  startOfMonth,
+  endOfMonth,
+  eachDayOfInterval,
+  isSameMonth,
+  isSameDay,
+  isBefore,
+} from 'date-fns'
 import { ru } from 'date-fns/locale/ru'
 
 function getCalendarDays(month: Date): { date: Date; isCurrentMonth: boolean }[] {
@@ -37,12 +47,47 @@ export default function BookingCalendar() {
   const [month, setMonth] = useState(today)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [slots, setSlots] = useState<string[]>([])
+  const [datesWithSlots, setDatesWithSlots] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [success, setSuccess] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const [form, setForm] = useState({ name: '', phone: '', comment: '', time: '' })
+
+  const handlePhoneChange = (value: string) => {
+    // Разрешаем только цифры и символы + - ( )
+    const cleaned = value.replace(/[^0-9+\-()]/g, '')
+    setForm((f) => ({ ...f, phone: cleaned }))
+  }
+
+  // Показать слоты как диапазон: начало–конец (по умолчанию 1 час)
+  function formatSlotLabel(t: string): string {
+    const [hStr, mStr] = t.split(':')
+    const h = Number(hStr)
+    const m = Number(mStr)
+    if (Number.isNaN(h) || Number.isNaN(m)) return t
+    const start = new Date(2000, 0, 1, h, m)
+    const end = new Date(start.getTime() + 60 * 60 * 1000) // +1 час
+    const pad = (n: number) => n.toString().padStart(2, '0')
+    return `${pad(start.getHours())}:${pad(start.getMinutes())}–${pad(
+      end.getHours()
+    )}:${pad(end.getMinutes())}`
+  }
+
+  // Загружаем список дат, где есть свободные слоты, чтобы подсветить их в календаре
+  useEffect(() => {
+    fetch('/api/booking/slots')
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data.dates)) {
+          setDatesWithSlots(new Set<string>(data.dates))
+        }
+      })
+      .catch(() => {
+        setDatesWithSlots(new Set())
+      })
+  }, [])
 
   useEffect(() => {
     if (!selectedDate) {
@@ -136,6 +181,7 @@ export default function BookingCalendar() {
                 const dateStr = format(date, 'yyyy-MM-dd')
                 const selected = selectedDate === dateStr
                 const disabled = !canSelect(date)
+                 const hasSlots = datesWithSlots.has(dateStr)
                 return (
                   <button
                     key={i}
@@ -148,7 +194,13 @@ export default function BookingCalendar() {
                     className={`
                       aspect-square rounded-lg text-sm font-medium transition-colors
                       ${!isCurrentMonth ? 'text-gray-300' : ''}
-                      ${disabled ? 'cursor-not-allowed opacity-50' : 'hover:bg-primary-100'}
+                      ${
+                        disabled
+                          ? 'cursor-not-allowed opacity-50'
+                          : hasSlots && isCurrentMonth
+                          ? 'bg-emerald-50 hover:bg-emerald-100'
+                          : 'hover:bg-primary-100'
+                      }
                       ${selected ? 'bg-primary-500 text-white hover:bg-primary-600' : ''}
                       ${isCurrentMonth && !disabled && !selected ? 'text-gray-700' : ''}
                     `}
@@ -186,7 +238,7 @@ export default function BookingCalendar() {
                               : 'bg-gray-100 hover:bg-primary-100 text-gray-700'
                           }`}
                         >
-                          {t}
+                          {formatSlotLabel(t)}
                         </button>
                       ))}
                     </div>
@@ -214,7 +266,7 @@ export default function BookingCalendar() {
                             type="tel"
                             required
                             value={form.phone}
-                            onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+                            onChange={(e) => handlePhoneChange(e.target.value)}
                             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                             placeholder="+7 999 123-45-67"
                           />
