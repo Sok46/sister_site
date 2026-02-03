@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { format, parseISO, isValid } from 'date-fns'
-import ru from 'date-fns/locale/ru'
+import { ru } from 'date-fns/locale/ru'
 
 const BOOKINGS_DIR = path.join(process.cwd(), 'content', 'bookings')
 const SLOTS_FILE = path.join(BOOKINGS_DIR, 'available-slots.json')
