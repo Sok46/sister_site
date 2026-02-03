@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { format, addDays, addMonths, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isSameDay, isBefore } from 'date-fns'
-import ru from 'date-fns/locale/ru'
+import { ru } from 'date-fns/locale/ru'
 
 function getCalendarDays(month: Date): { date: Date; isCurrentMonth: boolean }[] {
   const start = startOfMonth(month)
