@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { getAllPosts, type Post } from '@/lib/posts'
+import { isExternalImageUnoptimized } from '@/lib/images'
 
 type PostCard = Pick<Post, 'id' | 'title' | 'excerpt' | 'category' | 'date' | 'image' | 'emoji'> & { previewImage?: string }
 
@@ -62,6 +63,7 @@ export default function BlogPage() {
                     alt={post.title}
                     fill
                     className="object-cover group-hover:scale-110 transition-transform duration-500"
+                    unoptimized={isExternalImageUnoptimized(post.previewImage || post.image!)}
                   />
                 )}
                 {!post.previewImage && !post.image && (

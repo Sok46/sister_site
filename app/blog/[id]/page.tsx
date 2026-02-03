@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation'
 import { getAllPosts, getPostById, markdownToHtml } from '@/lib/posts'
+import { isExternalImageUnoptimized } from '@/lib/images'
 import Image from 'next/image'
 import VideoPlayer from '@/components/VideoPlayer'
 import TelegramEmbed from '@/components/TelegramEmbed'
@@ -59,6 +60,7 @@ export default async function PostPage({ params }: { params: { id: string } }) {
               width={1200}
               height={600}
               className="w-full h-auto"
+              unoptimized={isExternalImageUnoptimized(post.image)}
             />
           </div>
         )}
