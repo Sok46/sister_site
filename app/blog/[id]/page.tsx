@@ -52,18 +52,22 @@ export default async function PostPage({ params }: { params: { id: string } }) {
           </time>
         </header>
 
-        {post.image && (
-          <div className="mb-8 rounded-2xl overflow-hidden">
-            <Image
-              src={post.image}
-              alt={post.title}
-              width={1200}
-              height={600}
-              className="w-full h-auto"
-              unoptimized={isExternalImageUnoptimized(post.image)}
-            />
-          </div>
-        )}
+        {post.image && (() => {
+          const isYandex = isExternalImageUnoptimized(post.image!)
+          return (
+            <div className="mb-8 rounded-2xl overflow-hidden">
+              <Image
+                src={post.image!}
+                alt={post.title}
+                width={1200}
+                height={600}
+                className="w-full h-auto"
+                unoptimized={isYandex}
+                referrerPolicy={isYandex ? 'no-referrer' : undefined}
+              />
+            </div>
+          )
+        })()}
 
         {post.video && (
           <div className="mb-8">

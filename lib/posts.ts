@@ -70,6 +70,12 @@ export function getPostById(id: string): Post | null {
 
 // Конвертировать markdown в HTML
 export async function markdownToHtml(markdown: string): Promise<string> {
-  const result = await remark().use(html).process(markdown)
-  return result.toString()
+  const result = await remark().use(html, { allowDangerousHtml: true }).process(markdown)
+  let out = result.toString()
+  // Картинки с Яндекс.Диска часто блокируются по Referer — не отправляем его
+  out = out.replace(
+    /<img(\s[^>]*?)src="([^"]*yandex[^"]*)"([^>]*)>/gi,
+    '<img$1referrerpolicy="no-referrer" src="$2"$3>'
+  )
+  return out
 }

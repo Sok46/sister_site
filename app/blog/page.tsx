@@ -57,15 +57,20 @@ export default function BlogPage() {
               className="card group hover:scale-105 transition-transform duration-300"
             >
               <div className="relative h-64 overflow-hidden">
-                {(post.previewImage || post.image) && (
-                  <Image
-                    src={post.previewImage || post.image!}
-                    alt={post.title}
-                    fill
-                    className="object-cover group-hover:scale-110 transition-transform duration-500"
-                    unoptimized={isExternalImageUnoptimized(post.previewImage || post.image!)}
-                  />
-                )}
+                {(post.previewImage || post.image) && (() => {
+                  const src = post.previewImage || post.image!
+                  const isYandex = isExternalImageUnoptimized(src)
+                  return (
+                    <Image
+                      src={src}
+                      alt={post.title}
+                      fill
+                      className="object-cover group-hover:scale-110 transition-transform duration-500"
+                      unoptimized={isYandex}
+                      referrerPolicy={isYandex ? 'no-referrer' : undefined}
+                    />
+                  )
+                })()}
                 {!post.previewImage && !post.image && (
                   <div className="w-full h-full bg-gradient-to-br from-primary-100 to-accent-100 flex items-center justify-center">
                     <span className="text-6xl">{post.emoji || '📝'}</span>
