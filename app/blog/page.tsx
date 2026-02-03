@@ -1,12 +1,14 @@
 import Link from 'next/link'
 import Image from 'next/image'
-import { getAllPosts } from '@/lib/posts'
+import { getAllPosts, type Post } from '@/lib/posts'
+
+type PostCard = Pick<Post, 'id' | 'title' | 'excerpt' | 'category' | 'date' | 'image' | 'emoji'> & { previewImage?: string }
 
 export default function BlogPage() {
   const posts = getAllPosts()
 
   // Если нет постов, показываем примеры
-  const displayPosts = posts.length > 0 ? posts : [
+  const displayPosts: PostCard[] = posts.length > 0 ? posts : [
     {
       id: 'example-1',
       title: 'Утренняя практика йоги',
