@@ -71,7 +71,7 @@ export default async function PostPage({ params }: { params: { id: string } }) {
 
         {post.video && (
           <div className="mb-8">
-            <VideoPlayer src={post.video} title={post.title} />
+            <VideoPlayer src={post.video} storageKey={`blog-${post.id}`} />
           </div>
         )}
 
