@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   format,
   addDays,
@@ -8,11 +8,34 @@ import {
   startOfMonth,
   endOfMonth,
   eachDayOfInterval,
-  isSameMonth,
-  isSameDay,
   isBefore,
 } from 'date-fns'
 import { ru } from 'date-fns/locale/ru'
+
+/* ---------- Тип для виджета ЮKассы ---------- */
+interface YooCheckoutWidget {
+  render: (containerId: string) => Promise<void>
+  destroy: () => void
+}
+
+declare global {
+  interface Window {
+    YooMoneyCheckoutWidget: new (config: {
+      confirmation_token: string
+      return_url: string
+      error_callback?: (error: unknown) => void
+      customization?: {
+        modal?: boolean
+        colors?: {
+          control_primary?: string
+          control_primary_content?: string
+        }
+      }
+    }) => YooCheckoutWidget
+  }
+}
+
+/* ---------- Утилиты ---------- */
 
 function getCalendarDays(month: Date): { date: Date; isCurrentMonth: boolean }[] {
   const start = startOfMonth(month)
@@ -42,6 +65,35 @@ function getCalendarDays(month: Date): { date: Date; isCurrentMonth: boolean }[]
   return result
 }
 
+function formatSlotLabel(t: string): string {
+  const [hStr, mStr] = t.split(':')
+  const h = Number(hStr)
+  const m = Number(mStr)
+  if (Number.isNaN(h) || Number.isNaN(m)) return t
+  const start = new Date(2000, 0, 1, h, m)
+  const end = new Date(start.getTime() + 60 * 60 * 1000)
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  return `${pad(start.getHours())}:${pad(start.getMinutes())}–${pad(
+    end.getHours()
+  )}:${pad(end.getMinutes())}`
+}
+
+function loadScript(src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) {
+      resolve()
+      return
+    }
+    const script = document.createElement('script')
+    script.src = src
+    script.onload = () => resolve()
+    script.onerror = () => reject(new Error('Не удалось загрузить скрипт оплаты'))
+    document.head.appendChild(script)
+  })
+}
+
+/* ---------- Компонент ---------- */
+
 export default function BookingCalendar() {
   const today = new Date()
   const [month, setMonth] = useState(today)
@@ -55,27 +107,33 @@ export default function BookingCalendar() {
 
   const [form, setForm] = useState({ name: '', phone: '', comment: '', time: '' })
 
+  // Оплата
+  const [paymentEnabled, setPaymentEnabled] = useState(false)
+  const [lessonPrice, setLessonPrice] = useState(0)
+  const [paymentStep, setPaymentStep] = useState<'form' | 'widget'>('form')
+  const [confirmationData, setConfirmationData] = useState<{
+    token: string
+    paymentId: string
+  } | null>(null)
+  const widgetRef = useRef<YooCheckoutWidget | null>(null)
+
   const handlePhoneChange = (value: string) => {
-    // Разрешаем только цифры и символы + - ( )
     const cleaned = value.replace(/[^0-9+\-()]/g, '')
     setForm((f) => ({ ...f, phone: cleaned }))
   }
 
-  // Показать слоты как диапазон: начало–конец (по умолчанию 1 час)
-  function formatSlotLabel(t: string): string {
-    const [hStr, mStr] = t.split(':')
-    const h = Number(hStr)
-    const m = Number(mStr)
-    if (Number.isNaN(h) || Number.isNaN(m)) return t
-    const start = new Date(2000, 0, 1, h, m)
-    const end = new Date(start.getTime() + 60 * 60 * 1000) // +1 час
-    const pad = (n: number) => n.toString().padStart(2, '0')
-    return `${pad(start.getHours())}:${pad(start.getMinutes())}–${pad(
-      end.getHours()
-    )}:${pad(end.getMinutes())}`
-  }
+  // Проверяем, включена ли оплата
+  useEffect(() => {
+    fetch('/api/payment/config')
+      .then((r) => r.json())
+      .then((data) => {
+        setPaymentEnabled(data.enabled)
+        setLessonPrice(data.price)
+      })
+      .catch(() => {})
+  }, [])
 
-  // Загружаем список дат, где есть свободные слоты, чтобы подсветить их в календаре
+  // Загружаем даты со слотами
   useEffect(() => {
     fetch('/api/booking/slots')
       .then((r) => r.json())
@@ -89,6 +147,7 @@ export default function BookingCalendar() {
       })
   }, [])
 
+  // Загружаем слоты выбранной даты
   useEffect(() => {
     if (!selectedDate) {
       setSlots([])
@@ -106,35 +165,128 @@ export default function BookingCalendar() {
       .finally(() => setLoading(false))
   }, [selectedDate])
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // Инициализируем виджет оплаты когда получен токен
+  useEffect(() => {
+    if (!confirmationData || paymentStep !== 'widget') return
+
+    let destroyed = false
+
+    const initWidget = async () => {
+      try {
+        await loadScript('https://yookassa.ru/checkout-widget/v1/checkout-widget.js')
+
+        if (destroyed) return
+
+        const checkout = new window.YooMoneyCheckoutWidget({
+          confirmation_token: confirmationData.token,
+          return_url: `${window.location.origin}/booking/success?payment_id=${confirmationData.paymentId}`,
+          error_callback: () => {
+            setError('Ошибка оплаты. Попробуйте ещё раз.')
+            setPaymentStep('form')
+            setConfirmationData(null)
+          },
+          customization: {
+            colors: {
+              control_primary: '#7c3aed', // primary-600
+              control_primary_content: '#ffffff',
+            },
+          },
+        })
+
+        widgetRef.current = checkout
+        await checkout.render('yookassa-payment-widget')
+      } catch {
+        if (!destroyed) {
+          setError('Не удалось загрузить виджет оплаты')
+          setPaymentStep('form')
+          setConfirmationData(null)
+        }
+      }
+    }
+
+    initWidget()
+
+    return () => {
+      destroyed = true
+      if (widgetRef.current) {
+        widgetRef.current.destroy()
+        widgetRef.current = null
+      }
+    }
+  }, [confirmationData, paymentStep])
+
+  const cancelPayment = useCallback(() => {
+    if (widgetRef.current) {
+      widgetRef.current.destroy()
+      widgetRef.current = null
+    }
+    setPaymentStep('form')
+    setConfirmationData(null)
+    setError(null)
+  }, [])
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!selectedDate || !form.time || !form.name.trim() || !form.phone.trim()) return
     setSubmitting(true)
     setError(null)
-    fetch('/api/booking', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        date: selectedDate,
-        time: form.time,
-        name: form.name.trim(),
-        phone: form.phone.trim(),
-        comment: form.comment.trim(),
-      }),
-    })
-      .then((r) => r.json())
-      .then((data) => {
+
+    if (paymentEnabled) {
+      // Поток с оплатой
+      try {
+        const res = await fetch('/api/payment/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            date: selectedDate,
+            time: form.time,
+            name: form.name.trim(),
+            phone: form.phone.trim(),
+            comment: form.comment.trim(),
+          }),
+        })
+        const data = await res.json()
         if (data.error) throw new Error(data.error)
-        setSuccess(true)
-        setSlots((s) => s.filter((t) => t !== form.time))
-        setForm({ name: '', phone: '', comment: '', time: '' })
+
+        // Показываем виджет оплаты
+        setPaymentStep('widget')
+        setConfirmationData({
+          token: data.confirmation_token,
+          paymentId: data.payment_id,
+        })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Ошибка создания платежа')
+      } finally {
+        setSubmitting(false)
+      }
+    } else {
+      // Прямая запись без оплаты
+      fetch('/api/booking', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: selectedDate,
+          time: form.time,
+          name: form.name.trim(),
+          phone: form.phone.trim(),
+          comment: form.comment.trim(),
+        }),
       })
-      .catch((err) => setError(err.message || 'Ошибка записи'))
-      .finally(() => setSubmitting(false))
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.error) throw new Error(data.error)
+          setSuccess(true)
+          setSlots((s) => s.filter((t) => t !== form.time))
+          setForm({ name: '', phone: '', comment: '', time: '' })
+        })
+        .catch((err) => setError(err.message || 'Ошибка записи'))
+        .finally(() => setSubmitting(false))
+    }
   }
 
   const calendarDays = getCalendarDays(month)
-  const canSelect = (d: Date) => !isBefore(d, new Date(today.getFullYear(), today.getMonth(), today.getDate()))
+  const canSelect = (d: Date) =>
+    !isBefore(d, new Date(today.getFullYear(), today.getMonth(), today.getDate()))
 
   return (
     <section className="section-padding bg-gradient-to-br from-primary-50 to-accent-50">
@@ -143,11 +295,15 @@ export default function BookingCalendar() {
           📅 Запись на занятие
         </h2>
         <p className="text-center text-gray-600 mb-10">
-          Выберите дату и удобное время, оставьте контакты — и мы подтвердим вашу запись
+          Выберите дату и удобное время, оставьте контакты —{' '}
+          {paymentEnabled
+            ? 'и оплатите занятие онлайн'
+            : 'и мы подтвердим вашу запись'}
         </p>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          <div className="card p-6">
+          {/* ── Левая колонка: календарь ── */}
+          <div className={`card p-6 ${paymentStep === 'widget' ? 'opacity-50 pointer-events-none' : ''}`}>
             <div className="flex items-center justify-between mb-4">
               <button
                 type="button"
@@ -181,7 +337,7 @@ export default function BookingCalendar() {
                 const dateStr = format(date, 'yyyy-MM-dd')
                 const selected = selectedDate === dateStr
                 const disabled = !canSelect(date)
-                 const hasSlots = datesWithSlots.has(dateStr)
+                const hasSlots = datesWithSlots.has(dateStr)
                 return (
                   <button
                     key={i}
@@ -212,17 +368,51 @@ export default function BookingCalendar() {
             </div>
           </div>
 
+          {/* ── Правая колонка: форма / виджет оплаты ── */}
           <div className="card p-6">
-            {selectedDate ? (
+            {paymentStep === 'widget' && selectedDate ? (
+              /* --- Виджет оплаты ЮKассы --- */
+              <>
+                <div className="mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-1">
+                    Оплата занятия
+                  </h3>
+                  <p className="text-gray-600 text-sm">
+                    {format(new Date(selectedDate), 'd MMMM', { locale: ru })},{' '}
+                    {formatSlotLabel(form.time)} — <b>{lessonPrice} ₽</b>
+                  </p>
+                </div>
+
+                <div
+                  id="yookassa-payment-widget"
+                  className="min-h-[300px] rounded-lg"
+                />
+
+                {error && (
+                  <p className="text-red-600 text-sm mt-3">{error}</p>
+                )}
+
+                <button
+                  type="button"
+                  onClick={cancelPayment}
+                  className="mt-4 text-gray-500 hover:text-gray-700 text-sm underline"
+                >
+                  ← Отменить и вернуться к форме
+                </button>
+              </>
+            ) : selectedDate ? (
+              /* --- Обычная форма записи --- */
               <>
                 <p className="text-gray-600 mb-4">
-                  Свободные окна на {format(new Date(selectedDate), 'd MMMM', { locale: ru })}:
+                  Свободные окна на{' '}
+                  {format(new Date(selectedDate), 'd MMMM', { locale: ru })}:
                 </p>
                 {loading ? (
                   <p className="text-gray-500">Загрузка...</p>
                 ) : slots.length === 0 ? (
                   <p className="text-amber-600">
-                    Нет свободных окон на эту дату. Выберите другую дату или обратитесь к инструктору.
+                    Нет свободных окон на эту дату. Выберите другую дату или
+                    обратитесь к инструктору.
                   </p>
                 ) : (
                   <form onSubmit={handleSubmit} className="space-y-4">
@@ -253,7 +443,9 @@ export default function BookingCalendar() {
                             type="text"
                             required
                             value={form.name}
-                            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                            onChange={(e) =>
+                              setForm((f) => ({ ...f, name: e.target.value }))
+                            }
                             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                             placeholder="Как вас зовут?"
                           />
@@ -277,26 +469,35 @@ export default function BookingCalendar() {
                           </label>
                           <textarea
                             value={form.comment}
-                            onChange={(e) => setForm((f) => ({ ...f, comment: e.target.value }))}
+                            onChange={(e) =>
+                              setForm((f) => ({ ...f, comment: e.target.value }))
+                            }
                             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                             placeholder="Напишите, если нужно"
                             rows={2}
                           />
                         </div>
+
                         {error && (
                           <p className="text-red-600 text-sm">{error}</p>
                         )}
                         {success && (
                           <p className="text-green-600 font-medium">
-                            ✓ Запись отправлена! Мы свяжемся с вами для подтверждения.
+                            ✓ Запись отправлена! Мы свяжемся с вами для
+                            подтверждения.
                           </p>
                         )}
+
                         <button
                           type="submit"
                           disabled={submitting}
                           className="btn-primary w-full disabled:opacity-50"
                         >
-                          {submitting ? 'Отправка...' : 'Записаться'}
+                          {submitting
+                            ? 'Подождите...'
+                            : paymentEnabled
+                            ? `Записаться и оплатить (${lessonPrice} ₽)`
+                            : 'Записаться'}
                         </button>
                       </>
                     )}

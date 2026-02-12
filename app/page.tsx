@@ -38,67 +38,19 @@ export default function Home() {
             Привет! Я Зоя. А это — пространство для тех, кто ищет точку опоры в ритме современной жизни.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Link href="/blog" className="btn-primary">
-              Читать блог
-            </Link>
             <Link href="/yoga" className="btn-secondary">
-              Узнать о йоге
+              <span className="inline-flex items-center gap-2">
+                <span>🧘</span>
+                <span>Узнать о йоге</span>
+              </span>
             </Link>
             <Link
               href="#booking"
-              className="btn-primary sm:ml-2"
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary-500 to-primary-600 px-7 py-3 text-base font-semibold text-white shadow-lg shadow-primary-500/30 transition-all duration-300 hover:-translate-y-0.5 hover:from-primary-600 hover:to-primary-700 hover:shadow-xl hover:shadow-primary-500/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:ring-offset-2 sm:ml-2"
             >
-              Записаться на занятие
+              <span>✨</span>
+              <span>Записаться на занятие</span>
             </Link>
-          </div>
-        </div>
-      </section>
-
-      {/* Features Section */}
-      <section className="section-padding bg-white">
-        <div className="max-w-7xl mx-auto">
-          <h2 className="text-4xl font-serif font-bold text-center text-gray-900 mb-12">
-            О чём этот сайт
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <div className="card p-8 text-center">
-              <div className="text-5xl mb-4">🧘</div>
-              <h3 className="text-2xl font-serif font-bold text-gray-900 mb-4">
-                Йога
-              </h3>
-              <p className="text-gray-600 mb-6">
-                Практики, асаны, медитации и советы для начинающих и опытных практиков
-              </p>
-              <Link href="/yoga" className="text-primary-600 hover:text-primary-700 font-medium">
-                Узнать больше →
-              </Link>
-            </div>
-
-            <div className="card p-8 text-center">
-              <div className="text-5xl mb-4">🥗</div>
-              <h3 className="text-2xl font-serif font-bold text-gray-900 mb-4">
-                Питание
-              </h3>
-              <p className="text-gray-600 mb-6">
-                Рецепты здоровой пищи, советы по правильному питанию и полезные привычки
-              </p>
-              <Link href="/nutrition" className="text-primary-600 hover:text-primary-700 font-medium">
-                Узнать больше →
-              </Link>
-            </div>
-            
-            <div className="card p-8 text-center border-2 border-primary-200 shadow-xl">
-              <div className="text-5xl mb-4">📝</div>
-              <h3 className="text-2xl font-serif font-bold text-gray-900 mb-4">
-                Блог
-              </h3>
-              <p className="text-gray-600 mb-6">
-                Истории, практические заметки и вдохновение о йоге, питании и жизни в балансе
-              </p>
-              <Link href="/blog" className="text-primary-600 hover:text-primary-700 font-medium">
-                Читать блог →
-              </Link>
-            </div>
           </div>
         </div>
       </section>

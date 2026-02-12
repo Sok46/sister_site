@@ -37,6 +37,11 @@ export default function Footer() {
                   Галерея
                 </Link>
               </li>
+              <li>
+                <Link href="/merch" className="hover:text-primary-400 transition-colors">
+                  Мерч
+                </Link>
+              </li>
             </ul>
           </div>
           

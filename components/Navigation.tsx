@@ -2,18 +2,27 @@
 
 import Link from 'next/link'
 import { useState } from 'react'
+import { usePathname } from 'next/navigation'
 
 export default function Navigation() {
   const [isOpen, setIsOpen] = useState(false)
+  const pathname = usePathname()
 
   const navItems = [
     { href: '/', label: 'Главная' },
     { href: '/yoga', label: 'Йога' },
-    { href: '/nutrition', label: 'Питание' },
     { href: '/blog', label: 'Блог' },
     { href: '/playlist', label: 'Плейлист' },
     { href: '/gallery', label: 'Галерея' },
+    { href: '/merch', label: 'Мерч' },
   ]
+
+  const isActiveLink = (href: string) => {
+    if (href === '/') {
+      return pathname === '/'
+    }
+    return pathname === href || pathname.startsWith(`${href}/`)
+  }
 
   return (
     <nav className="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-50">
@@ -28,13 +37,13 @@ export default function Navigation() {
           {/* Desktop Navigation */}
           <div className="hidden md:flex space-x-8">
             {navItems.map((item) => {
-              const isBlog = item.href === '/blog'
+              const isActive = isActiveLink(item.href)
               return (
                 <Link
                   key={item.href}
                   href={item.href}
                   className={`text-gray-700 hover:text-primary-600 font-medium transition-colors duration-200 ${
-                    isBlog ? 'border-b-2 border-red-500 pb-1' : ''
+                    isActive ? 'border-b-2 border-primary-600 pb-1 text-primary-600' : ''
                   }`}
                 >
                   {item.label}
@@ -70,16 +79,23 @@ export default function Navigation() {
         {/* Mobile Navigation */}
         {isOpen && (
           <div className="md:hidden pb-4 space-y-2">
-            {navItems.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="block px-4 py-2 text-gray-700 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors duration-200"
-                onClick={() => setIsOpen(false)}
-              >
-                {item.label}
-              </Link>
-            ))}
+            {navItems.map((item) => {
+              const isActive = isActiveLink(item.href)
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`block px-4 py-2 rounded-lg transition-colors duration-200 ${
+                    isActive
+                      ? 'text-primary-600 bg-primary-50 border-l-4 border-primary-600'
+                      : 'text-gray-700 hover:text-primary-600 hover:bg-primary-50'
+                  }`}
+                  onClick={() => setIsOpen(false)}
+                >
+                  {item.label}
+                </Link>
+              )
+            })}
           </div>
         )}
       </div>

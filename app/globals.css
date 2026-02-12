@@ -25,6 +25,20 @@
   }
 }
 
+/* Plyr — кастомизация под цвета сайта */
+:root {
+  --plyr-color-main: #ee7a4a;
+  --plyr-video-background: #000;
+  --plyr-badge-background: #ee7a4a;
+  --plyr-range-thumb-background: #fff;
+  --plyr-range-thumb-shadow: 0 1px 1px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  --plyr-font-family: inherit;
+}
+
+.plyr-container .plyr {
+  border-radius: 0.75rem;
+}
+
 @layer components {
   .btn-primary {
     @apply bg-primary-500 hover:bg-primary-600 text-white px-6 py-3 rounded-lg font-medium transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5;

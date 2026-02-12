@@ -7,6 +7,8 @@ Telegram-бот для получения уведомлений о запися
 import json
 import os
 import re
+import subprocess
+import threading
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Literal, Optional
@@ -27,6 +29,7 @@ if not BOT_TOKEN:
     raise ValueError("Задайте переменную окружения TELEGRAM_BOT_TOKEN")
 
 bot = telebot.TeleBot(BOT_TOKEN)
+ADMIN_CHAT_ID = (os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SLOTS_FILE = BASE_DIR / "content" / "bookings" / "available-slots.json"
@@ -34,6 +37,9 @@ BOOKINGS_FILE = BASE_DIR / "content" / "bookings" / "bookings.json"
 POSTS_DIR = BASE_DIR / "content" / "posts"
 PAGE_SIZE_POSTS = 5
 PUBLIC_DIR = BASE_DIR / "public"
+PACKAGES_FILE = BASE_DIR / "content" / "yoga" / "packages.json"
+VIDEOS_DIR = BASE_DIR / "public" / "videos"
+PAGE_SIZE_PKGS = 5
 
 # Простое состояние диалога по chat_id:
 #   None                 — обычный режим
@@ -53,6 +59,23 @@ StateType = Optional[
         "edit_post",
         "upload_file",
         "rename_file",
+        # Yoga packages
+        "add_pkg_name",
+        "add_pkg_level",
+        "add_pkg_desc",
+        "add_pkg_price",
+        "add_video_title",
+        "add_video_duration",
+        "add_video_position",
+        "add_video_file",
+        # Edit yoga packages / videos
+        "edit_pkg_name",
+        "edit_pkg_desc",
+        "edit_pkg_price",
+        "edit_vid_title",
+        "add_pkg_preview",
+        "edit_pkg_preview",
+        "edit_pkg_position",
     ]
 ]
 chat_state: Dict[int, StateType] = {}
@@ -62,6 +85,132 @@ chat_post_files: Dict[int, str] = {}            # для нового поста
 chat_edit_post_files: Dict[int, str] = {}       # для редактирования существующего поста
 chat_upload_dirs: Dict[int, str] = {}           # для загрузки файлов в public/<dir>
 chat_rename_targets: Dict[int, tuple[str, str]] = {}  # (dir_name, filename) для переименования
+
+# Yoga packages
+chat_pkg_draft: Dict[int, dict] = {}       # черновик нового пакета {name, level, description}
+chat_pkg_target: Dict[int, str] = {}       # ID пакета для действий (добавление/удаление видео)
+chat_video_draft: Dict[int, dict] = {}     # черновик нового видео {title, duration, position}
+chat_edit_vid_idx: Dict[int, int] = {}     # индекс видео для редактирования
+
+
+def is_admin_chat(chat_id: int) -> bool:
+    if not ADMIN_CHAT_ID:
+        return False
+    return str(chat_id) == ADMIN_CHAT_ID
+
+
+def ensure_admin(chat_id: int) -> bool:
+    if is_admin_chat(chat_id):
+        return True
+    bot.send_message(chat_id, "⛔ Эта команда доступна только администратору.")
+    return False
+
+
+def _trim_output(text: str, max_chars: int = 3000) -> str:
+    text = (text or "").strip()
+    if not text:
+        return "нет вывода"
+    if len(text) <= max_chars:
+        return text
+    return "...\n" + text[-max_chars:]
+
+
+def _run_cmd(args: list[str], timeout: int = 120) -> tuple[int, str]:
+    completed = subprocess.run(
+        args,
+        cwd=BASE_DIR,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    output = _trim_output((completed.stdout or "") + "\n" + (completed.stderr or ""))
+    return completed.returncode, output
+
+
+def sync_bot_content_to_github(chat_id: int) -> tuple[bool, str]:
+    tracked_paths = [
+        "content/posts",
+        "public/photos",
+        "public/audio",
+        "public/videos",
+        "content/playlist",
+    ]
+
+    status_code, status_output = _run_cmd(
+        ["git", "status", "--porcelain", "--", *tracked_paths],
+        timeout=60,
+    )
+    if status_code != 0:
+        return False, f"Не удалось проверить git status.\n{status_output}"
+
+    if not status_output.strip() or status_output.strip() == "нет вывода":
+        return True, "Изменений контента для GitHub не найдено."
+
+    add_code, add_output = _run_cmd(["git", "add", "--", *tracked_paths], timeout=120)
+    if add_code != 0:
+        return False, f"Ошибка git add.\n{add_output}"
+
+    commit_message = f"chore(content): sync bot updates {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    commit_code, commit_output = _run_cmd(["git", "commit", "-m", commit_message], timeout=120)
+    if commit_code != 0:
+        if "nothing to commit" in commit_output.lower() or "нет изменений" in commit_output.lower():
+            return True, "После git add не осталось изменений для коммита."
+        return False, f"Ошибка git commit.\n{commit_output}"
+
+    push_code, push_output = _run_cmd(["git", "push", "origin", "main"], timeout=180)
+    if push_code != 0:
+        return False, f"Ошибка git push.\n{push_output}"
+
+    return True, f"Изменения контента отправлены в GitHub.\n{push_output}"
+
+
+def run_site_rebuild(chat_id: int) -> None:
+    try:
+        bot.send_message(
+            chat_id,
+            "🚀 Запускаю деплой:\n1) sync контента в GitHub\n2) npm run build\n3) pm2 restart sister-site",
+        )
+
+        sync_ok, sync_message = sync_bot_content_to_github(chat_id)
+        if not sync_ok:
+            bot.send_message(
+                chat_id,
+                "❌ Деплой остановлен: не удалось отправить контент в GitHub.\n\n"
+                f"{sync_message}",
+            )
+            return
+        bot.send_message(chat_id, f"✅ GitHub: {sync_message}")
+
+        build_code, build_output = _run_cmd(["npm", "run", "build"], timeout=1800)
+        if build_code != 0:
+            bot.send_message(
+                chat_id,
+                "❌ Сборка завершилась с ошибкой.\n\n"
+                f"Код выхода: {build_code}\n\n"
+                f"Логи:\n{build_output}",
+            )
+            return
+
+        restart_code, restart_output = _run_cmd(["pm2", "restart", "sister-site"], timeout=120)
+        if restart_code != 0:
+            bot.send_message(
+                chat_id,
+                "⚠️ Сборка прошла успешно, но перезапуск PM2 завершился с ошибкой.\n\n"
+                f"Код выхода: {restart_code}\n\n"
+                f"Логи PM2:\n{restart_output}",
+            )
+            return
+
+        bot.send_message(
+            chat_id,
+            "✅ Пересборка и перезапуск выполнены успешно.\n\n"
+            f"Короткий лог сборки:\n{build_output}\n\n"
+            f"Лог PM2:\n{restart_output}",
+        )
+    except subprocess.TimeoutExpired:
+        bot.send_message(chat_id, "⏱️ Команда выполнялась слишком долго и была остановлена по таймауту.")
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Ошибка запуска пересборки: {e}")
 
 
 def read_slots():
@@ -97,6 +246,19 @@ def format_date_ru(date_str):
         return date_str
 
 
+def read_packages() -> list:
+    if not PACKAGES_FILE.exists():
+        return []
+    with open(PACKAGES_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_packages(packages: list) -> None:
+    PACKAGES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(PACKAGES_FILE, "w", encoding="utf-8") as f:
+        json.dump(packages, f, ensure_ascii=False, indent=2)
+
+
 def make_main_keyboard() -> types.ReplyKeyboardMarkup:
     """
     Главное меню: два крупных раздела.
@@ -107,6 +269,9 @@ def make_main_keyboard() -> types.ReplyKeyboardMarkup:
     )
     kb.row(
         types.KeyboardButton("Управление блогом"),
+    )
+    kb.row(
+        types.KeyboardButton("Управление уроками"),
     )
     return kb
 
@@ -122,6 +287,25 @@ def make_schedule_keyboard() -> types.ReplyKeyboardMarkup:
         types.KeyboardButton("Удалить слот"),
     )
     kb.row(types.KeyboardButton("Отменить запись"))
+    kb.row(types.KeyboardButton("⬅️ В главное меню"))
+    return kb
+
+
+def make_yoga_keyboard() -> types.ReplyKeyboardMarkup:
+    """
+    Меню управления пакетами видеоуроков.
+    """
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row(types.KeyboardButton("Показать пакеты"))
+    kb.row(
+        types.KeyboardButton("Добавить пакет"),
+        types.KeyboardButton("Удалить пакет"),
+    )
+    kb.row(types.KeyboardButton("Редактировать пакет"))
+    kb.row(
+        types.KeyboardButton("Добавить видео в пакет"),
+        types.KeyboardButton("Удалить видео из пакета"),
+    )
     kb.row(types.KeyboardButton("⬅️ В главное меню"))
     return kb
 
@@ -528,8 +712,10 @@ def cmd_start(message):
         "🧘 Этот бот получает уведомления о новых записях на йогу.\n\n"
         "Главные разделы:\n"
         "• «Управление расписанием» — слоты, записи, отмены\n"
-        "• «Управление блогом» — работа с постами (в разработке)\n\n"
-        "Технически слоты хранятся в available-slots.json, записи — в bookings.json."
+        "• «Управление блогом» — работа с постами\n"
+        "• «Управление уроками» — пакеты видеоуроков йоги\n\n"
+        "Технически слоты хранятся в available-slots.json, записи — в bookings.json,\n"
+        "пакеты уроков — в content/yoga/packages.json."
     )
     bot.send_message(message.chat.id, text, reply_markup=make_main_keyboard())
 
@@ -571,6 +757,14 @@ def cmd_slots(message):
             status = "свободно: " + ", ".join(free) if free else "все заняты"
             lines.append(f"• {format_date_ru(d)} — {status}")
         bot.reply_to(message, "\n".join(lines))
+
+
+@bot.message_handler(commands=["deploy", "rebuild"])
+def cmd_deploy(message):
+    chat_id = message.chat.id
+    if not ensure_admin(chat_id):
+        return
+    threading.Thread(target=run_site_rebuild, args=(chat_id,), daemon=True).start()
 
 
 def parse_date_time(text: str):
@@ -832,7 +1026,7 @@ def handle_buttons(message):
         return
 
 
-@bot.message_handler(func=lambda m: m.text in ["Управление расписанием", "Управление блогом", "⬅️ В главное меню"])
+@bot.message_handler(func=lambda m: m.text in ["Управление расписанием", "Управление блогом", "Управление уроками", "⬅️ В главное меню"])
 def handle_main_menus(message):
     chat_id = message.chat.id
     text = (message.text or "").strip()
@@ -859,6 +1053,21 @@ def handle_main_menus(message):
             "Для добавления поста: нажмите «Добавить пост», затем отправьте текст в формате markdown — "
             "как в примере файла return-to-yoga-after-illness.md (шапка `---` с полями и текст ниже).",
             reply_markup=make_blog_keyboard(),
+        )
+        return
+
+    if text == "Управление уроками":
+        chat_state[chat_id] = None
+        bot.send_message(
+            chat_id,
+            "Раздел «Управление уроками».\n\n"
+            "Здесь можно управлять пакетами видеоуроков йоги:\n\n"
+            "• «Показать пакеты» — список всех пакетов\n"
+            "• «Добавить пакет» — создать новый пакет\n"
+            "• «Удалить пакет» — удалить пакет\n"
+            "• «Добавить видео в пакет» — добавить видеоурок\n"
+            "• «Удалить видео из пакета» — убрать урок из пакета",
+            reply_markup=make_yoga_keyboard(),
         )
         return
 
@@ -916,25 +1125,9 @@ def handle_main_menus(message):
 def handle_add_post_start(message):
     chat_id = message.chat.id
     chat_state[chat_id] = "add_post"
-    bot.send_message(
-        chat_id,
+
+    help_text = (
         "Отправьте *одним сообщением* полный текст поста в формате markdown.\n\n"
-        "Файл должен выглядеть примерно так:\n"
-        "```md\n"
-        "---\n"
-        "title: \"Заголовок поста\"\n"
-        "date: \"2026-02-03\"\n"
-        "category: \"Йога\"\n"
-        "excerpt: \"Короткое описание\"\n"
-        "emoji: \"🧘‍♀️\"\n"
-        "---\n"
-        "\n"
-        "Текст поста в формате markdown...\n"
-        "\n"
-        "![Фото с Яндекс Диска](ПРЯМАЯ_ССЫЛКА_С_КНОПКИ_«СКАЧАТЬ»)\n"
-        "\n"
-        "![Фото из папки photos](/photos/primer.jpg)\n"
-        "```\n\n"
         "После отправки я сохраню его как новый файл в `content/posts/` и спрошу, нужно ли добавить превью‑изображение.\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "*Справка по полям (YAML в шапке между ---)*\n\n"
@@ -949,7 +1142,36 @@ def handle_add_post_start(message):
         "• *image* — основное изображение поста (URL)\n"
         "• *video* — ссылка на видео (YouTube, Vimeo, RuTube или прямой URL); показывается в начале поста\n"
         "• *telegram* — ссылка на пост в Telegram для встраивания\n\n"
-        "Текст под второй строкой `---` — это тело поста (markdown: заголовки, списки, картинки, ссылки).",
+        "Текст под второй строкой `---` — это тело поста (markdown: заголовки, списки, картинки, ссылки)."
+    )
+
+    example_text = (
+        "Пример markdown‑поста:\n"
+        "```md\n"
+        "---\n"
+        "title: \"Заголовок поста\"\n"
+        "date: \"2026-02-03\"\n"
+        "category: \"Йога\"\n"
+        "excerpt: \"Короткое описание\"\n"
+        "emoji: \"🧘‍♀️\"\n"
+        "---\n"
+        "\n"
+        "Текст поста в формате markdown...\n"
+        "\n"
+        "![Фото с Яндекс Диска](ПРЯМАЯ_ССЫЛКА_С_КНОПКИ_«СКАЧАТЬ»)\n"
+        "\n"
+        "![Фото из папки photos](/photos/primer.jpg)\n"
+        "```"
+    )
+
+    bot.send_message(
+        chat_id,
+        help_text,
+        parse_mode="Markdown",
+    )
+    bot.send_message(
+        chat_id,
+        example_text,
         parse_mode="Markdown",
     )
 
@@ -974,6 +1196,873 @@ def handle_manage_files_start(message):
     chat_state[chat_id] = None
     send_media_dirs(chat_id)
 
+
+# ─── УПРАВЛЕНИЕ ПАКЕТАМИ ВИДЕОУРОКОВ ───────────────────────────────
+
+
+def send_packages_list(chat_id: int, prefix: str, prompt: str, page: int = 0):
+    """
+    Отправляет пагинированный список пакетов с inline‑кнопками.
+    prefix — для callback_data, напр. 'delpkg', 'addvid', 'delvid'.
+    """
+    packages = read_packages()
+    if not packages:
+        bot.send_message(
+            chat_id,
+            "Пакетов пока нет.",
+            reply_markup=make_yoga_keyboard(),
+        )
+        return
+
+    total = len(packages)
+    max_page = (total - 1) // PAGE_SIZE_PKGS
+    if page < 0:
+        page = 0
+    if page > max_page:
+        page = max_page
+
+    start = page * PAGE_SIZE_PKGS
+    end = min(start + PAGE_SIZE_PKGS, total)
+
+    kb = types.InlineKeyboardMarkup()
+    for pkg in packages[start:end]:
+        name = pkg.get("name", pkg["id"])
+        level = pkg.get("level", "")
+        vids = len(pkg.get("videos", []))
+        label = f"{name} ({level}, {vids} видео)"
+        if len(label) > 55:
+            label = label[:52] + "..."
+        kb.add(
+            types.InlineKeyboardButton(
+                text=label,
+                callback_data=f"{prefix}:{pkg['id']}:{page}",
+            )
+        )
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(
+            types.InlineKeyboardButton(
+                text="⬅️ Предыдущие",
+                callback_data=f"{prefix}_page:{page-1}",
+            )
+        )
+    if end < total:
+        nav_row.append(
+            types.InlineKeyboardButton(
+                text="Следующие ➡️",
+                callback_data=f"{prefix}_page:{page+1}",
+            )
+        )
+    if nav_row:
+        kb.row(*nav_row)
+
+    kb.row(
+        types.InlineKeyboardButton(
+            text="Отмена",
+            callback_data=f"{prefix}_cancel",
+        )
+    )
+
+    bot.send_message(chat_id, prompt, reply_markup=kb)
+
+
+@bot.message_handler(func=lambda m: m.text == "Показать пакеты")
+def handle_show_packages(message):
+    chat_id = message.chat.id
+    chat_state[chat_id] = None
+    packages = read_packages()
+    if not packages:
+        bot.send_message(
+            chat_id,
+            "Пакетов видеоуроков пока нет.",
+            reply_markup=make_yoga_keyboard(),
+        )
+        return
+
+    lines = ["📦 Пакеты видеоуроков:\n"]
+    for pkg in packages:
+        name = pkg.get("name", pkg["id"])
+        level = pkg.get("level", "—")
+        price = pkg.get("price", 0)
+        price_str = f"{price} ₽" if price > 0 else "Бесплатно"
+        vids = pkg.get("videos", [])
+        available = "✅" if pkg.get("available", True) else "❌"
+        lines.append(f"{available} *{name}*")
+        lines.append(f"   Уровень: {level} | Цена: {price_str} | Видео: {len(vids)}")
+        if vids:
+            for i, v in enumerate(vids, 1):
+                title = v.get("title", "Без названия")
+                dur = v.get("duration", "")
+                has_url = "🎬" if v.get("videoUrl") else "📝"
+                lines.append(f"   {i}. {has_url} {title} ({dur})")
+        lines.append("")
+
+    bot.send_message(
+        chat_id,
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=make_yoga_keyboard(),
+    )
+
+
+@bot.message_handler(func=lambda m: m.text == "Добавить пакет")
+def handle_add_package_start(message):
+    chat_id = message.chat.id
+    chat_state[chat_id] = "add_pkg_name"
+    chat_pkg_draft[chat_id] = {}
+    bot.send_message(
+        chat_id,
+        "Создание нового пакета.\n\n"
+        "Шаг 1/4: Введите *название* пакета:",
+        parse_mode="Markdown",
+        reply_markup=make_yoga_keyboard(),
+    )
+
+
+@bot.message_handler(func=lambda m: m.text == "Удалить пакет")
+def handle_delete_package_start(message):
+    chat_id = message.chat.id
+    chat_state[chat_id] = None
+    send_packages_list(chat_id, "delpkg", "Выберите пакет для удаления:")
+
+
+@bot.message_handler(func=lambda m: m.text == "Добавить видео в пакет")
+def handle_add_video_start(message):
+    chat_id = message.chat.id
+    chat_state[chat_id] = None
+    send_packages_list(chat_id, "addvid", "Выберите пакет, в который нужно добавить видео:")
+
+
+@bot.message_handler(func=lambda m: m.text == "Редактировать пакет")
+def handle_edit_package_start(message):
+    chat_id = message.chat.id
+    chat_state[chat_id] = None
+    send_packages_list(chat_id, "editpkg", "Выберите пакет для редактирования:")
+
+
+@bot.message_handler(func=lambda m: m.text == "Удалить видео из пакета")
+def handle_delete_video_start(message):
+    chat_id = message.chat.id
+    chat_state[chat_id] = None
+    send_packages_list(chat_id, "delvid", "Выберите пакет, из которого нужно удалить видео:")
+
+
+# ─── Callback‑обработчики пакетов ──────────────────────────────────
+
+# Пагинация списка пакетов (все три префикса)
+@bot.callback_query_handler(func=lambda c: c.data and c.data.split("_page:")[0] in ["delpkg", "addvid", "delvid", "editpkg"])
+def handle_pkg_list_page(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    prefix, page_str = call.data.split("_page:", 1)
+    try:
+        page = int(page_str)
+    except ValueError:
+        bot.answer_callback_query(call.id, "Ошибка страницы.")
+        return
+
+    prompts = {
+        "delpkg": "Выберите пакет для удаления:",
+        "addvid": "Выберите пакет, в который нужно добавить видео:",
+        "delvid": "Выберите пакет, из которого нужно удалить видео:",
+        "editpkg": "Выберите пакет для редактирования:",
+    }
+    bot.answer_callback_query(call.id)
+    send_packages_list(chat_id, prefix, prompts.get(prefix, "Выберите пакет:"), page)
+
+
+# Отмена выбора пакета
+@bot.callback_query_handler(func=lambda c: c.data and c.data.split("_cancel")[0] in ["delpkg", "addvid", "delvid", "editpkg"])
+def handle_pkg_cancel(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id, "Отмена.")
+    bot.send_message(
+        chat_id,
+        "Действие отменено.",
+        reply_markup=make_yoga_keyboard(),
+    )
+
+
+# ── Удаление пакета ──
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("delpkg:"))
+def handle_delete_package_select(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    try:
+        _, payload = call.data.split(":", 1)
+        pkg_id, page_str = payload.rsplit(":", 1)
+    except Exception:
+        bot.answer_callback_query(call.id, "Ошибка.")
+        return
+
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg:
+        bot.answer_callback_query(call.id, "Пакет не найден.")
+        return
+
+    name = pkg.get("name", pkg_id)
+    vids = len(pkg.get("videos", []))
+
+    kb = types.InlineKeyboardMarkup()
+    kb.row(
+        types.InlineKeyboardButton(
+            text="✅ Да, удалить пакет",
+            callback_data=f"confirm_delpkg:{pkg_id}",
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            text="Отмена",
+            callback_data="delpkg_cancel",
+        )
+    )
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        f"Вы действительно хотите удалить пакет «{name}»?\n"
+        f"В нём {vids} видеоурок(ов).",
+        reply_markup=kb,
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("confirm_delpkg:"))
+def handle_confirm_delete_package(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, pkg_id = call.data.split(":", 1)
+
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg:
+        bot.answer_callback_query(call.id, "Пакет уже удалён.")
+        bot.send_message(chat_id, "Пакет уже не существует.", reply_markup=make_yoga_keyboard())
+        return
+
+    name = pkg.get("name", pkg_id)
+
+    # Удаляем файл превью из notgallery
+    deleted_files = []
+    image = pkg.get("image", "")
+    if image and image.startswith("/notgallery/"):
+        img_path = PUBLIC_DIR / image.lstrip("/")
+        if img_path.exists():
+            try:
+                img_path.unlink()
+                deleted_files.append(f"превью {img_path.name}")
+            except Exception:
+                pass
+
+    # Удаляем все видеофайлы из public/videos/
+    for v in pkg.get("videos", []):
+        video_url = v.get("videoUrl", "")
+        if video_url.startswith("/videos/"):
+            video_path = PUBLIC_DIR / video_url.lstrip("/")
+            if video_path.exists():
+                try:
+                    video_path.unlink()
+                    deleted_files.append(f"видео {video_path.name}")
+                except Exception:
+                    pass
+
+    packages = [p for p in packages if p["id"] != pkg_id]
+    write_packages(packages)
+
+    files_note = ""
+    if deleted_files:
+        files_note = "\n📁 Удалены файлы: " + ", ".join(deleted_files)
+
+    bot.answer_callback_query(call.id, "Пакет удалён.")
+    bot.send_message(
+        chat_id,
+        f"🗑 Пакет «{name}» удалён.{files_note}",
+        reply_markup=make_yoga_keyboard(),
+    )
+
+
+# ── Добавление видео в пакет ──
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("addvid:"))
+def handle_add_video_select_package(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    try:
+        _, payload = call.data.split(":", 1)
+        pkg_id, page_str = payload.rsplit(":", 1)
+    except Exception:
+        bot.answer_callback_query(call.id, "Ошибка.")
+        return
+
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg:
+        bot.answer_callback_query(call.id, "Пакет не найден.")
+        return
+
+    chat_pkg_target[chat_id] = pkg_id
+    chat_video_draft[chat_id] = {}
+    chat_state[chat_id] = "add_video_title"
+
+    name = pkg.get("name", pkg_id)
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        f"Добавление видео в пакет «{name}».\n\n"
+        "Шаг 1/3: Введите *название* видеоурока:",
+        parse_mode="Markdown",
+        reply_markup=make_yoga_keyboard(),
+    )
+
+
+# ── Удаление видео из пакета ──
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("delvid:"))
+def handle_delete_video_select_package(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    try:
+        _, payload = call.data.split(":", 1)
+        pkg_id, page_str = payload.rsplit(":", 1)
+    except Exception:
+        bot.answer_callback_query(call.id, "Ошибка.")
+        return
+
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg:
+        bot.answer_callback_query(call.id, "Пакет не найден.")
+        return
+
+    videos = pkg.get("videos", [])
+    if not videos:
+        bot.answer_callback_query(call.id, "В пакете нет видео.")
+        bot.send_message(
+            chat_id,
+            f"В пакете «{pkg.get('name', pkg_id)}» нет видеоуроков.",
+            reply_markup=make_yoga_keyboard(),
+        )
+        return
+
+    kb = types.InlineKeyboardMarkup()
+    for i, v in enumerate(videos):
+        title = v.get("title", f"Видео {i+1}")
+        dur = v.get("duration", "")
+        label = f"{title} ({dur})" if dur else title
+        if len(label) > 55:
+            label = label[:52] + "..."
+        kb.add(
+            types.InlineKeyboardButton(
+                text=label,
+                callback_data=f"rmvid:{pkg_id}|{i}",
+            )
+        )
+    kb.row(
+        types.InlineKeyboardButton(
+            text="Отмена",
+            callback_data="delvid_cancel",
+        )
+    )
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        f"Выберите видео для удаления из пакета «{pkg.get('name', pkg_id)}»:",
+        reply_markup=kb,
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("rmvid:"))
+def handle_remove_video_confirm(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    try:
+        _, payload = call.data.split(":", 1)
+        pkg_id, idx_str = payload.split("|", 1)
+        idx = int(idx_str)
+    except Exception:
+        bot.answer_callback_query(call.id, "Ошибка данных.")
+        return
+
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg:
+        bot.answer_callback_query(call.id, "Пакет не найден.")
+        return
+
+    videos = pkg.get("videos", [])
+    if idx < 0 or idx >= len(videos):
+        bot.answer_callback_query(call.id, "Видео не найдено.")
+        return
+
+    video = videos[idx]
+    title = video.get("title", f"Видео {idx+1}")
+
+    kb = types.InlineKeyboardMarkup()
+    kb.row(
+        types.InlineKeyboardButton(
+            text="✅ Да, удалить видео",
+            callback_data=f"confirm_rmvid:{pkg_id}|{idx}",
+        )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            text="Отмена",
+            callback_data="delvid_cancel",
+        )
+    )
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        f"Удалить видео «{title}» из пакета «{pkg.get('name', pkg_id)}»?",
+        reply_markup=kb,
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("confirm_rmvid:"))
+def handle_confirm_remove_video(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    try:
+        _, payload = call.data.split(":", 1)
+        pkg_id, idx_str = payload.split("|", 1)
+        idx = int(idx_str)
+    except Exception:
+        bot.answer_callback_query(call.id, "Ошибка данных.")
+        return
+
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg:
+        bot.answer_callback_query(call.id, "Пакет не найден.")
+        bot.send_message(chat_id, "Пакет уже не существует.", reply_markup=make_yoga_keyboard())
+        return
+
+    videos = pkg.get("videos", [])
+    if idx < 0 or idx >= len(videos):
+        bot.answer_callback_query(call.id, "Видео уже удалено.")
+        bot.send_message(chat_id, "Видео уже было удалено.", reply_markup=make_yoga_keyboard())
+        return
+
+    removed = videos.pop(idx)
+    title = removed.get("title", "Без названия")
+    pkg["videos"] = videos
+    write_packages(packages)
+
+    # Удаляем файл из public/videos/, если он там есть
+    video_url = removed.get("videoUrl", "")
+    file_deleted = False
+    if video_url.startswith("/videos/"):
+        video_path = PUBLIC_DIR / video_url.lstrip("/")
+        if video_path.exists():
+            try:
+                video_path.unlink()
+                file_deleted = True
+            except Exception:
+                pass
+
+    file_note = "\n📁 Файл видео удалён с сервера." if file_deleted else ""
+    bot.answer_callback_query(call.id, "Видео удалено.")
+    bot.send_message(
+        chat_id,
+        f"🗑 Видео «{title}» удалено из пакета «{pkg.get('name', pkg_id)}».{file_note}",
+        reply_markup=make_yoga_keyboard(),
+    )
+
+
+# ── Выбор уровня при создании пакета (inline) ──
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("pkg_level:"))
+def handle_package_level_select(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, level = call.data.split(":", 1)
+
+    draft = chat_pkg_draft.get(chat_id)
+    if not draft:
+        bot.answer_callback_query(call.id, "Ошибка: данные черновика потеряны.")
+        return
+
+    draft["level"] = level
+    chat_state[chat_id] = "add_pkg_desc"
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        f"Уровень: *{level}*.\n\n"
+        "Шаг 3/4: Введите *описание* пакета:",
+        parse_mode="Markdown",
+        reply_markup=make_yoga_keyboard(),
+    )
+
+
+# ── Редактирование пакета ──
+
+def _send_edit_pkg_menu(chat_id: int, pkg_id: str):
+    """
+    Показывает меню редактирования пакета: свойства + видеоуроки.
+    """
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg:
+        bot.send_message(chat_id, "Пакет не найден.", reply_markup=make_yoga_keyboard())
+        return
+
+    name = pkg.get("name", pkg_id)
+    level = pkg.get("level", "—")
+    price = pkg.get("price", 0)
+    price_str = f"{price} ₽" if price > 0 else "Бесплатно"
+    desc = pkg.get("description", "—")
+    if len(desc) > 80:
+        desc = desc[:77] + "..."
+    videos = pkg.get("videos", [])
+
+    image = pkg.get("image", "")
+    image_str = f"`{image}`" if image else "нет"
+
+    # Текущая позиция пакета в списке
+    pkg_idx = next((i for i, p in enumerate(packages) if p["id"] == pkg_id), 0)
+    total_pkgs = len(packages)
+
+    lines = [
+        f"✏️ Редактирование пакета «{name}»\n",
+        f"📊 Уровень: {level}",
+        f"💰 Цена: {price_str}",
+        f"📝 {desc}",
+        f"🖼 Превью: {image_str}",
+        f"🎬 Видеоуроков: {len(videos)}",
+        f"📍 Позиция: {pkg_idx + 1} из {total_pkgs}",
+    ]
+
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton(text="✏️ Название", callback_data=f"epkg_name:{pkg_id}"))
+    kb.add(types.InlineKeyboardButton(text="📊 Уровень", callback_data=f"epkg_level:{pkg_id}"))
+    kb.add(types.InlineKeyboardButton(text="📝 Описание", callback_data=f"epkg_desc:{pkg_id}"))
+    kb.add(types.InlineKeyboardButton(text="💰 Цена", callback_data=f"epkg_price:{pkg_id}"))
+    kb.add(types.InlineKeyboardButton(text="🖼 Сменить превью", callback_data=f"epkg_img:{pkg_id}"))
+    kb.add(types.InlineKeyboardButton(text=f"📍 Позиция ({pkg_idx + 1}/{total_pkgs})", callback_data=f"epkg_pos:{pkg_id}"))
+    if videos:
+        kb.add(types.InlineKeyboardButton(text="🎬 Редактировать видеоуроки", callback_data=f"epkg_vids:{pkg_id}"))
+    kb.add(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="editpkg_cancel"))
+
+    bot.send_message(chat_id, "\n".join(lines), reply_markup=kb)
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("editpkg:"))
+def handle_edit_package_select(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    try:
+        _, payload = call.data.split(":", 1)
+        pkg_id, page_str = payload.rsplit(":", 1)
+    except Exception:
+        bot.answer_callback_query(call.id, "Ошибка.")
+        return
+
+    bot.answer_callback_query(call.id)
+    chat_pkg_target[chat_id] = pkg_id
+    _send_edit_pkg_menu(chat_id, pkg_id)
+
+
+# Редактирование названия
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("epkg_name:"))
+def handle_edit_pkg_name(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, pkg_id = call.data.split(":", 1)
+    chat_pkg_target[chat_id] = pkg_id
+    chat_state[chat_id] = "edit_pkg_name"
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        "Введите новое *название* пакета:",
+        parse_mode="Markdown",
+        reply_markup=make_yoga_keyboard(),
+    )
+
+
+# Редактирование уровня
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("epkg_level:"))
+def handle_edit_pkg_level(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, pkg_id = call.data.split(":", 1)
+    chat_pkg_target[chat_id] = pkg_id
+
+    kb = types.InlineKeyboardMarkup()
+    for level in ["Начинающий", "Средний", "Продвинутый", "Все уровни"]:
+        kb.add(types.InlineKeyboardButton(text=level, callback_data=f"epkg_setlvl:{pkg_id}|{level}"))
+    kb.add(types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"epkg_back:{pkg_id}"))
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(chat_id, "Выберите новый *уровень* пакета:", parse_mode="Markdown", reply_markup=kb)
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("epkg_setlvl:"))
+def handle_edit_pkg_set_level(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, payload = call.data.split(":", 1)
+    pkg_id, level = payload.split("|", 1)
+
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg:
+        bot.answer_callback_query(call.id, "Пакет не найден.")
+        return
+
+    pkg["level"] = level
+    write_packages(packages)
+    bot.answer_callback_query(call.id, f"Уровень: {level}")
+    bot.send_message(chat_id, f"✅ Уровень изменён на «{level}».", reply_markup=make_yoga_keyboard())
+    _send_edit_pkg_menu(chat_id, pkg_id)
+
+
+# Редактирование описания
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("epkg_desc:"))
+def handle_edit_pkg_desc(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, pkg_id = call.data.split(":", 1)
+    chat_pkg_target[chat_id] = pkg_id
+    chat_state[chat_id] = "edit_pkg_desc"
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        "Введите новое *описание* пакета:",
+        parse_mode="Markdown",
+        reply_markup=make_yoga_keyboard(),
+    )
+
+
+# Редактирование цены
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("epkg_price:"))
+def handle_edit_pkg_price(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, pkg_id = call.data.split(":", 1)
+    chat_pkg_target[chat_id] = pkg_id
+    chat_state[chat_id] = "edit_pkg_price"
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        "Введите новую *цену* пакета в рублях (0 = бесплатно):",
+        parse_mode="Markdown",
+        reply_markup=make_yoga_keyboard(),
+    )
+
+
+# Смена превью
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("epkg_img:"))
+def handle_edit_pkg_image(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, pkg_id = call.data.split(":", 1)
+    chat_pkg_target[chat_id] = pkg_id
+    chat_state[chat_id] = "edit_pkg_preview"
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        "Отправьте новое *превью* для пакета:\n\n"
+        "• *Фото* — обложка пакета (старое фото удалится)\n"
+        "• *Эмодзи* (например 🧘) — будет вместо картинки",
+        parse_mode="Markdown",
+        reply_markup=make_yoga_keyboard(),
+    )
+
+
+# Смена позиции пакета
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("epkg_pos:"))
+def handle_edit_pkg_position(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, pkg_id = call.data.split(":", 1)
+    chat_pkg_target[chat_id] = pkg_id
+    chat_state[chat_id] = "edit_pkg_position"
+
+    packages = read_packages()
+    total = len(packages)
+    pkg_idx = next((i for i, p in enumerate(packages) if p["id"] == pkg_id), 0)
+
+    lines = ["Текущий порядок пакетов:\n"]
+    for i, p in enumerate(packages):
+        marker = " 👈" if p["id"] == pkg_id else ""
+        lines.append(f"  {i + 1}. {p.get('name', p['id'])}{marker}")
+    lines.append(f"\nВведите новую позицию (1–{total}):")
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(chat_id, "\n".join(lines), reply_markup=make_yoga_keyboard())
+
+
+# Назад к меню редактирования пакета
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("epkg_back:"))
+def handle_edit_pkg_back(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, pkg_id = call.data.split(":", 1)
+    bot.answer_callback_query(call.id)
+    _send_edit_pkg_menu(chat_id, pkg_id)
+
+
+# ── Редактирование видеоуроков внутри пакета ──
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("epkg_vids:"))
+def handle_edit_pkg_videos_list(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, pkg_id = call.data.split(":", 1)
+
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg:
+        bot.answer_callback_query(call.id, "Пакет не найден.")
+        return
+
+    videos = pkg.get("videos", [])
+    if not videos:
+        bot.answer_callback_query(call.id, "Видео нет.")
+        return
+
+    kb = types.InlineKeyboardMarkup()
+    for i, v in enumerate(videos):
+        title = v.get("title", f"Видео {i+1}")
+        label = f"{i+1}. {title}"
+        if len(label) > 55:
+            label = label[:52] + "..."
+        kb.add(types.InlineKeyboardButton(text=label, callback_data=f"evid_sel:{pkg_id}|{i}"))
+
+    kb.add(types.InlineKeyboardButton(text="⬅️ Назад к пакету", callback_data=f"epkg_back:{pkg_id}"))
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(chat_id, "Выберите видео для редактирования:", reply_markup=kb)
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("evid_sel:"))
+def handle_edit_video_select(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, payload = call.data.split(":", 1)
+    pkg_id, idx_str = payload.split("|", 1)
+    idx = int(idx_str)
+
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg:
+        bot.answer_callback_query(call.id, "Пакет не найден.")
+        return
+
+    videos = pkg.get("videos", [])
+    if idx < 0 or idx >= len(videos):
+        bot.answer_callback_query(call.id, "Видео не найдено.")
+        return
+
+    v = videos[idx]
+    title = v.get("title", "Без названия")
+    dur = v.get("duration", "—")
+    url = v.get("videoUrl", "нет файла")
+
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton(text="✏️ Переименовать", callback_data=f"evid_rename:{pkg_id}|{idx}"))
+    if idx > 0:
+        kb.add(types.InlineKeyboardButton(text="⬆️ Переместить выше", callback_data=f"evid_up:{pkg_id}|{idx}"))
+    if idx < len(videos) - 1:
+        kb.add(types.InlineKeyboardButton(text="⬇️ Переместить ниже", callback_data=f"evid_down:{pkg_id}|{idx}"))
+    kb.add(types.InlineKeyboardButton(text="⬅️ К списку видео", callback_data=f"epkg_vids:{pkg_id}"))
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        f"🎬 *{title}*\n⏱ {dur}\n🔗 {url}\n\nВыберите действие:",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+# Переименование видео
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("evid_rename:"))
+def handle_edit_video_rename(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, payload = call.data.split(":", 1)
+    pkg_id, idx_str = payload.split("|", 1)
+    idx = int(idx_str)
+
+    chat_pkg_target[chat_id] = pkg_id
+    chat_edit_vid_idx[chat_id] = idx
+    chat_state[chat_id] = "edit_vid_title"
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        chat_id,
+        "Введите новое *название* видеоурока:",
+        parse_mode="Markdown",
+        reply_markup=make_yoga_keyboard(),
+    )
+
+
+# Переместить видео выше
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("evid_up:"))
+def handle_edit_video_up(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, payload = call.data.split(":", 1)
+    pkg_id, idx_str = payload.split("|", 1)
+    idx = int(idx_str)
+
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg or idx <= 0 or idx >= len(pkg.get("videos", [])):
+        bot.answer_callback_query(call.id, "Невозможно переместить.")
+        return
+
+    videos = pkg["videos"]
+    videos[idx], videos[idx - 1] = videos[idx - 1], videos[idx]
+    write_packages(packages)
+
+    title = videos[idx - 1].get("title", "Видео")
+    bot.answer_callback_query(call.id, f"«{title}» перемещено на позицию {idx}")
+
+    # Показываем обновлённый список видео
+    _send_edit_video_list(chat_id, pkg_id)
+
+
+# Переместить видео ниже
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("evid_down:"))
+def handle_edit_video_down(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    _, payload = call.data.split(":", 1)
+    pkg_id, idx_str = payload.split("|", 1)
+    idx = int(idx_str)
+
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg or idx < 0 or idx >= len(pkg.get("videos", [])) - 1:
+        bot.answer_callback_query(call.id, "Невозможно переместить.")
+        return
+
+    videos = pkg["videos"]
+    videos[idx], videos[idx + 1] = videos[idx + 1], videos[idx]
+    write_packages(packages)
+
+    title = videos[idx + 1].get("title", "Видео")
+    bot.answer_callback_query(call.id, f"«{title}» перемещено на позицию {idx + 2}")
+
+    _send_edit_video_list(chat_id, pkg_id)
+
+
+def _send_edit_video_list(chat_id: int, pkg_id: str):
+    """Показывает обновлённый список видео после перемещения."""
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg:
+        bot.send_message(chat_id, "Пакет не найден.", reply_markup=make_yoga_keyboard())
+        return
+
+    videos = pkg.get("videos", [])
+    if not videos:
+        bot.send_message(chat_id, "В пакете больше нет видео.", reply_markup=make_yoga_keyboard())
+        return
+
+    lines = [f"🎬 Видеоуроки в пакете «{pkg.get('name', pkg_id)}»:\n"]
+    for i, v in enumerate(videos, 1):
+        lines.append(f"  {i}. {v.get('title', 'Без названия')}")
+
+    kb = types.InlineKeyboardMarkup()
+    for i, v in enumerate(videos):
+        title = v.get("title", f"Видео {i+1}")
+        label = f"{i+1}. {title}"
+        if len(label) > 55:
+            label = label[:52] + "..."
+        kb.add(types.InlineKeyboardButton(text=label, callback_data=f"evid_sel:{pkg_id}|{i}"))
+
+    kb.add(types.InlineKeyboardButton(text="⬅️ Назад к пакету", callback_data=f"epkg_back:{pkg_id}"))
+
+    bot.send_message(chat_id, "\n".join(lines), reply_markup=kb)
+
+
+# ─── Конец блока пакетов ───────────────────────────────────────────
 
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("del_date:"))
 def handle_delete_date_callback(call: types.CallbackQuery):
@@ -1357,52 +2446,67 @@ def handle_media_file(call: types.CallbackQuery):
 
     ext = path.suffix.lower()
     bot.answer_callback_query(call.id)
-    try:
-        if ext in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
-            with open(path, "rb") as f:
-                bot.send_photo(chat_id, f, caption=filename)
-        elif ext in [".mp4", ".mov", ".avi"]:
-            with open(path, "rb") as f:
-                bot.send_video(chat_id, f, caption=filename)
-        elif ext in [".mp3", ".wav"]:
-            with open(path, "rb") as f:
-                bot.send_audio(chat_id, f, caption=filename)
-        else:
-            with open(path, "rb") as f:
-                bot.send_document(chat_id, f, caption=filename)
 
-        # После успешной отправки предлагаем удалить или переименовать файл
-        kb = types.InlineKeyboardMarkup()
-        kb.row(
-            types.InlineKeyboardButton(
-                text="🗑 Удалить файл",
-                callback_data=f"mf_delfile:{dir_name}|{filename}",
-            )
+    # Размер файла для информации
+    try:
+        size_bytes = path.stat().st_size
+        if size_bytes >= 1024 * 1024:
+            size_str = f"{size_bytes / (1024 * 1024):.1f} МБ"
+        elif size_bytes >= 1024:
+            size_str = f"{size_bytes / 1024:.0f} КБ"
+        else:
+            size_str = f"{size_bytes} байт"
+    except Exception:
+        size_str = "?"
+
+    # Пробуем отправить превью, но только для небольших файлов (< 20 МБ)
+    # и фото. Для крупных видео — не пытаемся, чтобы избежать таймаутов.
+    sent_preview = False
+    MAX_SEND_SIZE = 20 * 1024 * 1024  # 20 МБ
+    try:
+        if size_bytes < MAX_SEND_SIZE:
+            if ext in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
+                with open(path, "rb") as f:
+                    bot.send_photo(chat_id, f, caption=filename)
+                sent_preview = True
+            elif ext in [".mp3", ".wav"]:
+                with open(path, "rb") as f:
+                    bot.send_audio(chat_id, f, caption=filename)
+                sent_preview = True
+    except Exception:
+        pass  # Если не отправилось — не страшно, кнопки всё равно покажем
+
+    # Всегда показываем кнопки действий с файлом
+    kb = types.InlineKeyboardMarkup()
+    kb.row(
+        types.InlineKeyboardButton(
+            text="🗑 Удалить файл",
+            callback_data=f"mf_delfile:{dir_name}|{filename}",
         )
-        kb.row(
-            types.InlineKeyboardButton(
-                text="✏️ Переименовать файл",
-                callback_data=f"mf_rename:{dir_name}|{filename}",
-            )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            text="✏️ Переименовать файл",
+            callback_data=f"mf_rename:{dir_name}|{filename}",
         )
-        kb.row(
-            types.InlineKeyboardButton(
-                text="Отмена",
-                callback_data="mf_cancel",
-            )
+    )
+    kb.row(
+        types.InlineKeyboardButton(
+            text="Отмена",
+            callback_data="mf_cancel",
         )
-        bot.send_message(
-            chat_id,
-            f"Файл `{filename}` отправлен.\nВы можете удалить его с сервера:",
-            parse_mode="Markdown",
-            reply_markup=kb,
-        )
-    except Exception as e:
-        bot.send_message(
-            chat_id,
-            f"Не удалось отправить файл: {e}",
-            reply_markup=make_blog_keyboard(),
-        )
+    )
+
+    info = f"📄 `{filename}`\n📁 Папка: `{dir_name}`\n💾 Размер: {size_str}"
+    if not sent_preview and ext in [".mp4", ".mov", ".avi"]:
+        info += "\n\n⚠️ Видеофайл слишком большой для предпросмотра в Telegram."
+
+    bot.send_message(
+        chat_id,
+        f"{info}\n\nВыберите действие:",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "mf_back_dirs")
@@ -1567,6 +2671,116 @@ def handle_edit_post_select(call: types.CallbackQuery):
     )
 
 
+def _finalize_new_package(chat_id: int, image_path: str = ""):
+    """
+    Создаёт пакет из черновика chat_pkg_draft и сохраняет в JSON.
+    """
+    draft = chat_pkg_draft.get(chat_id, {})
+
+    new_package = {
+        "id": draft.get("id", f"pkg-{datetime.now().strftime('%Y%m%d-%H%M%S')}"),
+        "name": draft.get("name", "Новый пакет"),
+        "level": draft.get("level", "Все уровни"),
+        "description": draft.get("description", ""),
+        "videos": [],
+        "price": draft.get("price", 0),
+        "image": image_path,
+        "available": True,
+    }
+
+    packages = read_packages()
+    existing_ids = {p["id"] for p in packages}
+    if new_package["id"] in existing_ids:
+        new_package["id"] = f"{new_package['id']}-{datetime.now().strftime('%H%M%S')}"
+
+    packages.append(new_package)
+    write_packages(packages)
+
+    price = new_package["price"]
+    price_str = f"{price} ₽" if price > 0 else "Бесплатно"
+    img_note = f"\n🖼 Превью: `{image_path}`" if image_path else "\n🖼 Без превью"
+    bot.send_message(
+        chat_id,
+        f"✅ Пакет создан!\n\n"
+        f"📦 *{new_package['name']}*\n"
+        f"📊 Уровень: {new_package['level']}\n"
+        f"💰 Цена: {price_str}\n"
+        f"📝 {new_package['description']}"
+        f"{img_note}\n\n"
+        f"ID: `{new_package['id']}`\n\n"
+        "Теперь вы можете добавить видеоуроки через «Добавить видео в пакет».",
+        parse_mode="Markdown",
+        reply_markup=make_yoga_keyboard(),
+    )
+    chat_state[chat_id] = None
+    chat_pkg_draft.pop(chat_id, None)
+
+
+def _save_video_to_package(chat_id: int, pkg_id: str | None, draft: dict):
+    """
+    Финальный шаг: сохраняем видео из draft в пакет pkg_id.
+    """
+    if not pkg_id:
+        bot.send_message(
+            chat_id,
+            "Не удалось определить пакет. Начните заново через «Добавить видео в пакет».",
+            reply_markup=make_yoga_keyboard(),
+        )
+        chat_state[chat_id] = None
+        chat_pkg_target.pop(chat_id, None)
+        chat_video_draft.pop(chat_id, None)
+        return
+
+    packages = read_packages()
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if not pkg:
+        bot.send_message(
+            chat_id,
+            "Пакет не найден. Возможно, он был удалён.",
+            reply_markup=make_yoga_keyboard(),
+        )
+        chat_state[chat_id] = None
+        chat_pkg_target.pop(chat_id, None)
+        chat_video_draft.pop(chat_id, None)
+        return
+
+    new_video: dict = {
+        "title": draft.get("title", "Без названия"),
+        "duration": draft.get("duration", ""),
+    }
+    if draft.get("videoUrl"):
+        new_video["videoUrl"] = draft["videoUrl"]
+
+    if "videos" not in pkg:
+        pkg["videos"] = []
+
+    # Вставляем в нужную позицию (1-based из draft)
+    position = draft.get("position")
+    if position and 1 <= position <= len(pkg["videos"]) + 1:
+        pkg["videos"].insert(position - 1, new_video)
+    else:
+        pkg["videos"].append(new_video)
+    write_packages(packages)
+
+    url_info = ""
+    if new_video.get("videoUrl"):
+        url_info = f"\n🔗 Файл: `{new_video['videoUrl']}`"
+
+    bot.send_message(
+        chat_id,
+        f"✅ Видео добавлено в пакет «{pkg.get('name', pkg_id)}»!\n\n"
+        f"🎬 *{new_video['title']}*\n"
+        f"⏱ {new_video['duration']}"
+        f"{url_info}\n\n"
+        f"Всего видео в пакете: {len(pkg['videos'])}.",
+        parse_mode="Markdown",
+        reply_markup=make_yoga_keyboard(),
+    )
+    chat_state[chat_id] = None
+    chat_pkg_target.pop(chat_id, None)
+    chat_video_draft.pop(chat_id, None)
+
+
 @bot.message_handler(content_types=["photo", "video", "audio", "document"])
 def handle_media_message(message):
     chat_id = message.chat.id
@@ -1638,7 +2852,166 @@ def handle_media_message(message):
         chat_post_files.pop(chat_id, None)
         return
 
-    # 2) Загрузка файла в public/<dir> через «Управление файлами»
+    # 2) Превью при создании нового пакета
+    if state == "add_pkg_preview":
+        if not message.photo:
+            bot.send_message(
+                chat_id,
+                "Для превью нужно отправить именно фото.\n"
+                "Или напишите `Без превью`.",
+                reply_markup=make_yoga_keyboard(),
+            )
+            return
+
+        photo = message.photo[-1]
+        try:
+            file_info = bot.get_file(photo.file_id)
+            downloaded = bot.download_file(file_info.file_path)
+        except Exception as e:
+            bot.send_message(chat_id, f"Не удалось скачать фото: {e}", reply_markup=make_yoga_keyboard())
+            return
+
+        photos_dir = BASE_DIR / "public" / "notgallery"
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        img_name = f"pkg-preview-{datetime.now().strftime('%Y%m%d-%H%M%S')}.jpg"
+        img_path = photos_dir / img_name
+        with open(img_path, "wb") as f:
+            f.write(downloaded)
+
+        web_path = f"/notgallery/{img_name}"
+        _finalize_new_package(chat_id, image_path=web_path)
+        return
+
+    # 3) Превью при редактировании пакета
+    if state == "edit_pkg_preview":
+        if not message.photo:
+            bot.send_message(
+                chat_id,
+                "Для превью нужно отправить фото или эмодзи (текстом).",
+                reply_markup=make_yoga_keyboard(),
+            )
+            return
+
+        pkg_id = chat_pkg_target.get(chat_id)
+        if not pkg_id:
+            bot.send_message(chat_id, "Ошибка: пакет не определён.", reply_markup=make_yoga_keyboard())
+            chat_state[chat_id] = None
+            return
+
+        photo = message.photo[-1]
+        try:
+            file_info = bot.get_file(photo.file_id)
+            downloaded = bot.download_file(file_info.file_path)
+        except Exception as e:
+            bot.send_message(chat_id, f"Не удалось скачать фото: {e}", reply_markup=make_yoga_keyboard())
+            return
+
+        packages = read_packages()
+        pkg = next((p for p in packages if p["id"] == pkg_id), None)
+        if not pkg:
+            bot.send_message(chat_id, "Пакет не найден.", reply_markup=make_yoga_keyboard())
+            chat_state[chat_id] = None
+            return
+
+        # Удаляем старое превью
+        old_image = pkg.get("image", "")
+        if old_image and old_image.startswith("/notgallery/"):
+            old_path = PUBLIC_DIR / old_image.lstrip("/")
+            if old_path.exists():
+                try:
+                    old_path.unlink()
+                except Exception:
+                    pass
+
+        # Сохраняем новое
+        photos_dir = BASE_DIR / "public" / "notgallery"
+        photos_dir.mkdir(parents=True, exist_ok=True)
+        img_name = f"pkg-preview-{datetime.now().strftime('%Y%m%d-%H%M%S')}.jpg"
+        img_path = photos_dir / img_name
+        with open(img_path, "wb") as f:
+            f.write(downloaded)
+
+        web_path = f"/notgallery/{img_name}"
+        pkg["image"] = web_path
+        write_packages(packages)
+
+        bot.send_message(
+            chat_id,
+            f"✅ Превью обновлено: `{web_path}`",
+            parse_mode="Markdown",
+            reply_markup=make_yoga_keyboard(),
+        )
+        chat_state[chat_id] = None
+        _send_edit_pkg_menu(chat_id, pkg_id)
+        return
+
+    # 4) Загрузка видео для пакета уроков
+    if state == "add_video_file":
+        # Принимаем видео или документ как файл видеоурока
+        file_id = None
+        ext = ""
+
+        try:
+            if message.video:
+                file_id = message.video.file_id
+                ext = ".mp4"
+            elif message.document:
+                file_id = message.document.file_id
+                _, dot, tail = message.document.file_name.rpartition(".")
+                ext = "." + tail if dot else ""
+            else:
+                bot.send_message(
+                    chat_id,
+                    "Для видеоурока отправьте видео или документ.\n"
+                    "Можно также отправить URL или написать `Пропустить`.",
+                    reply_markup=make_yoga_keyboard(),
+                )
+                return
+
+            file_info = bot.get_file(file_id)
+            data = bot.download_file(file_info.file_path)
+        except Exception as e:
+            bot.send_message(
+                chat_id,
+                f"Не удалось скачать файл с серверов Telegram: {e}",
+                reply_markup=make_yoga_keyboard(),
+            )
+            return
+
+        # Сохраняем в public/videos/
+        VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+        if message.document and message.document.file_name:
+            filename = message.document.file_name
+        else:
+            filename = f"video-{datetime.now().strftime('%Y%m%d-%H%M%S')}{ext}"
+
+        target_path = VIDEOS_DIR / filename
+        # Если файл уже существует, добавляем суффикс
+        if target_path.exists():
+            stem = target_path.stem
+            suffix = target_path.suffix
+            filename = f"{stem}-{datetime.now().strftime('%H%M%S')}{suffix}"
+            target_path = VIDEOS_DIR / filename
+
+        try:
+            with open(target_path, "wb") as f:
+                f.write(data)
+        except Exception as e:
+            bot.send_message(
+                chat_id,
+                f"Не удалось сохранить видеофайл: {e}",
+                reply_markup=make_yoga_keyboard(),
+            )
+            return
+
+        pkg_id = chat_pkg_target.get(chat_id)
+        draft = chat_video_draft.get(chat_id, {})
+        draft["videoUrl"] = f"/videos/{filename}"
+
+        _save_video_to_package(chat_id, pkg_id, draft)
+        return
+
+    # 3) Загрузка файла в public/<dir> через «Управление файлами»
     if state == "upload_file":
         dir_name = chat_upload_dirs.get(chat_id)
         if not dir_name:
@@ -1983,6 +3356,473 @@ def handle_text(message):
 
         chat_state[chat_id] = None
         chat_rename_targets.pop(chat_id, None)
+        return
+
+    # ── Редактирование пакетов и видео ──
+
+    if state == "edit_pkg_name":
+        new_name = (message.text or "").strip()
+        if not new_name:
+            bot.send_message(chat_id, "Название не может быть пустым. Введите новое название:", reply_markup=make_yoga_keyboard())
+            return
+
+        pkg_id = chat_pkg_target.get(chat_id)
+        packages = read_packages()
+        pkg = next((p for p in packages if p["id"] == pkg_id), None)
+        if not pkg:
+            bot.send_message(chat_id, "Пакет не найден.", reply_markup=make_yoga_keyboard())
+            chat_state[chat_id] = None
+            return
+
+        old_name = pkg.get("name", pkg_id)
+        pkg["name"] = new_name
+        write_packages(packages)
+
+        bot.send_message(
+            chat_id,
+            f"✅ Название изменено: «{old_name}» → «{new_name}»",
+            reply_markup=make_yoga_keyboard(),
+        )
+        chat_state[chat_id] = None
+        _send_edit_pkg_menu(chat_id, pkg_id)
+        return
+
+    if state == "edit_pkg_desc":
+        new_desc = (message.text or "").strip()
+        if not new_desc:
+            bot.send_message(chat_id, "Описание не может быть пустым. Введите новое описание:", reply_markup=make_yoga_keyboard())
+            return
+
+        pkg_id = chat_pkg_target.get(chat_id)
+        packages = read_packages()
+        pkg = next((p for p in packages if p["id"] == pkg_id), None)
+        if not pkg:
+            bot.send_message(chat_id, "Пакет не найден.", reply_markup=make_yoga_keyboard())
+            chat_state[chat_id] = None
+            return
+
+        pkg["description"] = new_desc
+        write_packages(packages)
+
+        bot.send_message(chat_id, "✅ Описание обновлено.", reply_markup=make_yoga_keyboard())
+        chat_state[chat_id] = None
+        _send_edit_pkg_menu(chat_id, pkg_id)
+        return
+
+    if state == "edit_pkg_price":
+        price_text = (message.text or "").strip()
+        try:
+            price = int(price_text)
+            if price < 0:
+                raise ValueError()
+        except ValueError:
+            bot.send_message(chat_id, "Введите корректную цену (целое число >= 0):", reply_markup=make_yoga_keyboard())
+            return
+
+        pkg_id = chat_pkg_target.get(chat_id)
+        packages = read_packages()
+        pkg = next((p for p in packages if p["id"] == pkg_id), None)
+        if not pkg:
+            bot.send_message(chat_id, "Пакет не найден.", reply_markup=make_yoga_keyboard())
+            chat_state[chat_id] = None
+            return
+
+        old_price = pkg.get("price", 0)
+        pkg["price"] = price
+        write_packages(packages)
+
+        price_str = f"{price} ₽" if price > 0 else "Бесплатно"
+        bot.send_message(chat_id, f"✅ Цена изменена: {old_price} ₽ → {price_str}", reply_markup=make_yoga_keyboard())
+        chat_state[chat_id] = None
+        _send_edit_pkg_menu(chat_id, pkg_id)
+        return
+
+    if state == "edit_pkg_position":
+        pos_text = (message.text or "").strip()
+        pkg_id = chat_pkg_target.get(chat_id)
+
+        packages = read_packages()
+        total = len(packages)
+
+        try:
+            new_pos = int(pos_text)
+            if new_pos < 1 or new_pos > total:
+                raise ValueError()
+        except ValueError:
+            bot.send_message(chat_id, f"Введите число от 1 до {total}:", reply_markup=make_yoga_keyboard())
+            return
+
+        # Находим текущий индекс
+        old_idx = next((i for i, p in enumerate(packages) if p["id"] == pkg_id), None)
+        if old_idx is None:
+            bot.send_message(chat_id, "Пакет не найден.", reply_markup=make_yoga_keyboard())
+            chat_state[chat_id] = None
+            return
+
+        new_idx = new_pos - 1
+        if old_idx == new_idx:
+            bot.send_message(chat_id, "Пакет уже на этой позиции.", reply_markup=make_yoga_keyboard())
+            chat_state[chat_id] = None
+            _send_edit_pkg_menu(chat_id, pkg_id)
+            return
+
+        # Перемещаем
+        pkg = packages.pop(old_idx)
+        packages.insert(new_idx, pkg)
+        write_packages(packages)
+
+        bot.send_message(
+            chat_id,
+            f"✅ Пакет «{pkg.get('name', pkg_id)}» перемещён на позицию {new_pos}.",
+            reply_markup=make_yoga_keyboard(),
+        )
+        chat_state[chat_id] = None
+        _send_edit_pkg_menu(chat_id, pkg_id)
+        return
+
+    if state == "edit_pkg_preview":
+        # Эмодзи как превью при редактировании
+        text = (message.text or "").strip()
+        if text and len(text) <= 10 and not text.startswith("/"):
+            pkg_id = chat_pkg_target.get(chat_id)
+            if not pkg_id:
+                bot.send_message(chat_id, "Ошибка: пакет не определён.", reply_markup=make_yoga_keyboard())
+                chat_state[chat_id] = None
+                return
+
+            packages = read_packages()
+            pkg = next((p for p in packages if p["id"] == pkg_id), None)
+            if not pkg:
+                bot.send_message(chat_id, "Пакет не найден.", reply_markup=make_yoga_keyboard())
+                chat_state[chat_id] = None
+                return
+
+            # Удаляем старое фото-превью (если было файлом)
+            old_image = pkg.get("image", "")
+            if old_image and old_image.startswith("/notgallery/"):
+                old_path = PUBLIC_DIR / old_image.lstrip("/")
+                if old_path.exists():
+                    try:
+                        old_path.unlink()
+                    except Exception:
+                        pass
+
+            pkg["image"] = text
+            write_packages(packages)
+
+            bot.send_message(
+                chat_id,
+                f"✅ Превью обновлено: {text}",
+                reply_markup=make_yoga_keyboard(),
+            )
+            chat_state[chat_id] = None
+            _send_edit_pkg_menu(chat_id, pkg_id)
+            return
+
+        bot.send_message(
+            chat_id,
+            "Отправьте фото или эмодзи для превью.",
+            reply_markup=make_yoga_keyboard(),
+        )
+        return
+
+    if state == "edit_vid_title":
+        new_title = (message.text or "").strip()
+        if not new_title:
+            bot.send_message(chat_id, "Название не может быть пустым. Введите новое название:", reply_markup=make_yoga_keyboard())
+            return
+
+        pkg_id = chat_pkg_target.get(chat_id)
+        idx = chat_edit_vid_idx.get(chat_id)
+        if pkg_id is None or idx is None:
+            bot.send_message(chat_id, "Ошибка: потеряны данные. Начните заново.", reply_markup=make_yoga_keyboard())
+            chat_state[chat_id] = None
+            return
+
+        packages = read_packages()
+        pkg = next((p for p in packages if p["id"] == pkg_id), None)
+        if not pkg or idx >= len(pkg.get("videos", [])):
+            bot.send_message(chat_id, "Пакет или видео не найдены.", reply_markup=make_yoga_keyboard())
+            chat_state[chat_id] = None
+            return
+
+        old_title = pkg["videos"][idx].get("title", "Без названия")
+        pkg["videos"][idx]["title"] = new_title
+        write_packages(packages)
+
+        bot.send_message(
+            chat_id,
+            f"✅ Видео переименовано: «{old_title}» → «{new_title}»",
+            reply_markup=make_yoga_keyboard(),
+        )
+        chat_state[chat_id] = None
+        chat_edit_vid_idx.pop(chat_id, None)
+        _send_edit_video_list(chat_id, pkg_id)
+        return
+
+    # ── Создание пакетов и добавление видео ──
+
+    if state == "add_pkg_name":
+        name = (message.text or "").strip()
+        if not name:
+            bot.send_message(
+                chat_id,
+                "Название не может быть пустым. Введите название пакета:",
+                reply_markup=make_yoga_keyboard(),
+            )
+            return
+
+        draft = chat_pkg_draft.get(chat_id, {})
+        draft["name"] = name
+        # Генерируем ID из названия (транслит)
+        slug = re.sub(r"[^a-zA-Zа-яА-ЯёЁ0-9\s-]", "", name.lower())
+        slug = re.sub(r"\s+", "-", slug.strip())
+        # Простая транслитерация
+        tr = {
+            "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+            "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+            "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+            "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+            "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+        }
+        transliterated = "".join(tr.get(c, c) for c in slug)
+        transliterated = re.sub(r"-+", "-", transliterated).strip("-")
+        if not transliterated:
+            transliterated = f"pkg-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        draft["id"] = transliterated
+        chat_pkg_draft[chat_id] = draft
+
+        chat_state[chat_id] = "add_pkg_level"
+
+        kb = types.InlineKeyboardMarkup()
+        for level in ["Начинающий", "Средний", "Продвинутый", "Все уровни"]:
+            kb.add(
+                types.InlineKeyboardButton(
+                    text=level,
+                    callback_data=f"pkg_level:{level}",
+                )
+            )
+
+        bot.send_message(
+            chat_id,
+            f"Название: *{name}* (ID: `{transliterated}`).\n\n"
+            "Шаг 2/4: Выберите *уровень* пакета:",
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+        return
+
+    if state == "add_pkg_desc":
+        desc = (message.text or "").strip()
+        if not desc:
+            bot.send_message(
+                chat_id,
+                "Описание не может быть пустым. Введите описание пакета:",
+                reply_markup=make_yoga_keyboard(),
+            )
+            return
+
+        draft = chat_pkg_draft.get(chat_id, {})
+        draft["description"] = desc
+        chat_pkg_draft[chat_id] = draft
+        chat_state[chat_id] = "add_pkg_price"
+
+        bot.send_message(
+            chat_id,
+            "Шаг 4/4: Введите *цену* пакета в рублях.\n"
+            "Для бесплатного пакета введите `0`:",
+            parse_mode="Markdown",
+            reply_markup=make_yoga_keyboard(),
+        )
+        return
+
+    if state == "add_pkg_price":
+        price_text = (message.text or "").strip()
+        try:
+            price = int(price_text)
+            if price < 0:
+                raise ValueError()
+        except ValueError:
+            bot.send_message(
+                chat_id,
+                "Введите корректную цену (целое число >= 0):",
+                reply_markup=make_yoga_keyboard(),
+            )
+            return
+
+        draft = chat_pkg_draft.get(chat_id, {})
+        draft["price"] = price
+        chat_pkg_draft[chat_id] = draft
+        chat_state[chat_id] = "add_pkg_preview"
+
+        bot.send_message(
+            chat_id,
+            f"Цена: *{price} ₽*.\n\n" if price > 0 else "Цена: *Бесплатно*.\n\n",
+            parse_mode="Markdown",
+        )
+        bot.send_message(
+            chat_id,
+            "Шаг 5/5: Задайте *превью* для пакета.\n\n"
+            "• Отправьте *фото* — обложка пакета\n"
+            "• Отправьте *эмодзи* (например 🧘 или 🔥) — будет вместо картинки\n"
+            "• Или напишите `Без превью`",
+            parse_mode="Markdown",
+            reply_markup=make_yoga_keyboard(),
+        )
+        return
+
+    if state == "add_pkg_preview":
+        text = (message.text or "").strip()
+        if text.lower() in ("без превью", "нет превью", "нет"):
+            _finalize_new_package(chat_id, image_path="")
+            return
+        # Короткий текст (до 10 символов, не начинается с /) — считаем эмодзи
+        if text and len(text) <= 10 and not text.startswith("/"):
+            _finalize_new_package(chat_id, image_path=text)
+            return
+        bot.send_message(
+            chat_id,
+            "Отправьте фото, эмодзи или напишите `Без превью`.",
+            reply_markup=make_yoga_keyboard(),
+        )
+        return
+
+    if state == "add_video_title":
+        title = (message.text or "").strip()
+        if not title:
+            bot.send_message(
+                chat_id,
+                "Название видео не может быть пустым. Введите название:",
+                reply_markup=make_yoga_keyboard(),
+            )
+            return
+
+        draft = chat_video_draft.get(chat_id, {})
+        draft["title"] = title
+        chat_video_draft[chat_id] = draft
+        chat_state[chat_id] = "add_video_duration"
+
+        bot.send_message(
+            chat_id,
+            f"Название: *{title}*.\n\n"
+            "Шаг 2/3: Введите *длительность* видео (например, `30 мин`):",
+            parse_mode="Markdown",
+            reply_markup=make_yoga_keyboard(),
+        )
+        return
+
+    if state == "add_video_duration":
+        duration = (message.text or "").strip()
+        if not duration:
+            bot.send_message(
+                chat_id,
+                "Длительность не может быть пустой. Введите длительность (напр. `25 мин`):",
+                reply_markup=make_yoga_keyboard(),
+            )
+            return
+
+        draft = chat_video_draft.get(chat_id, {})
+        draft["duration"] = duration
+        chat_video_draft[chat_id] = draft
+
+        # Показываем текущий список видео и спрашиваем позицию
+        pkg_id = chat_pkg_target.get(chat_id)
+        packages = read_packages()
+        pkg = next((p for p in packages if p["id"] == pkg_id), None) if pkg_id else None
+        videos = pkg.get("videos", []) if pkg else []
+
+        if not videos:
+            # Пакет пуст — видео будет первым, пропускаем вопрос о позиции
+            draft["position"] = 1
+            chat_video_draft[chat_id] = draft
+            chat_state[chat_id] = "add_video_file"
+            bot.send_message(
+                chat_id,
+                f"Длительность: *{duration}*.\n"
+                "Пакет пока пуст — видео будет первым.\n\n"
+                "Шаг 4/4: Отправьте *видеофайл*.\n\n"
+                "• Отправьте видео или документ — файл сохранится в `public/videos/`\n"
+                "• Или отправьте текстом ссылку на видео (URL)",
+                parse_mode="Markdown",
+                reply_markup=make_yoga_keyboard(),
+            )
+        else:
+            chat_state[chat_id] = "add_video_position"
+            lines = [f"Длительность: *{duration}*.\n"]
+            lines.append("Текущие видео в пакете:")
+            for i, v in enumerate(videos, 1):
+                lines.append(f"  {i}. {v.get('title', 'Без названия')}")
+            lines.append(f"\nШаг 3/4: Введите *номер позиции* для нового видео (1–{len(videos)+1}).")
+            lines.append(f"Например, `{len(videos)+1}` — в конец, `1` — в начало.")
+            bot.send_message(
+                chat_id,
+                "\n".join(lines),
+                parse_mode="Markdown",
+                reply_markup=make_yoga_keyboard(),
+            )
+        return
+
+    if state == "add_video_position":
+        pos_text = (message.text or "").strip()
+        pkg_id = chat_pkg_target.get(chat_id)
+        packages = read_packages()
+        pkg = next((p for p in packages if p["id"] == pkg_id), None) if pkg_id else None
+        total = len(pkg.get("videos", [])) if pkg else 0
+
+        try:
+            pos = int(pos_text)
+            if pos < 1 or pos > total + 1:
+                raise ValueError()
+        except ValueError:
+            bot.send_message(
+                chat_id,
+                f"Введите число от 1 до {total + 1}:",
+                reply_markup=make_yoga_keyboard(),
+            )
+            return
+
+        draft = chat_video_draft.get(chat_id, {})
+        draft["position"] = pos
+        chat_video_draft[chat_id] = draft
+        chat_state[chat_id] = "add_video_file"
+
+        bot.send_message(
+            chat_id,
+            f"Позиция: *{pos}*.\n\n"
+            "Шаг 4/4: Отправьте *видеофайл*.\n\n"
+            "• Отправьте видео или документ — файл сохранится в `public/videos/`\n"
+            "• Или отправьте текстом ссылку на видео (URL)",
+            parse_mode="Markdown",
+            reply_markup=make_yoga_keyboard(),
+        )
+        return
+
+    if state == "add_video_file":
+        # Текстовое сообщение: либо URL, либо «Пропустить»
+        text = (message.text or "").strip()
+        if not text:
+            bot.send_message(
+                chat_id,
+                "Отправьте видеофайл или ссылку на видео.",
+                reply_markup=make_yoga_keyboard(),
+            )
+            return
+
+        pkg_id = chat_pkg_target.get(chat_id)
+        draft = chat_video_draft.get(chat_id, {})
+
+        if text.startswith("http://") or text.startswith("https://") or text.startswith("/"):
+            draft["videoUrl"] = text
+        else:
+            bot.send_message(
+                chat_id,
+                "Отправьте видеофайл или ссылку на видео (начинается с http).",
+                reply_markup=make_yoga_keyboard(),
+            )
+            return
+
+        # Сохраняем видео в пакет
+        _save_video_to_package(chat_id, pkg_id, draft)
         return
 
     if state == "add_slot":

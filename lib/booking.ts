@@ -14,6 +14,7 @@ export interface Booking {
   name: string
   phone: string
   comment: string
+  paymentId?: string
   createdAt: string
 }
 
@@ -98,13 +99,21 @@ export function createBooking(data: {
   name: string
   phone: string
   comment: string
+  paymentId?: string
 }): Booking {
+  const bookings = readBookings()
+
+  // Идемпотентность: если запись с таким paymentId уже есть — вернуть её
+  if (data.paymentId) {
+    const existing = bookings.find((b) => b.paymentId === data.paymentId)
+    if (existing) return existing
+  }
+
   const slots = getAvailableSlotsForDate(data.date)
   if (!slots.includes(data.time)) {
     throw new Error('Это время уже занято')
   }
 
-  const bookings = readBookings()
   const id = `b-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const booking: Booking = {
     id,
