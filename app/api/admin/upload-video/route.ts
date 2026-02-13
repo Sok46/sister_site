@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { mkdir, unlink } from 'fs/promises'
-import { execFile } from 'child_process'
-import { promisify } from 'util'
+import { mkdir } from 'fs/promises'
 import path from 'path'
 import { requireAdminToken } from '@/lib/admin-auth'
 import { createWriteStream } from 'fs'
@@ -13,8 +11,6 @@ export const dynamic = 'force-dynamic'
 
 const ALLOWED_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm'])
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024 // 1 GB
-const execFileAsync = promisify(execFile)
-const MAX_TRANSCODE_BYTES = 400 * 1024 * 1024 // 400 MB
 
 function sanitizeBasename(input: string): string {
   const base = input
@@ -25,41 +21,6 @@ function sanitizeBasename(input: string): string {
     .replace(/^-|-$/g, '')
 
   return base || `video-${Date.now()}`
-}
-
-async function tryTranscodeToWebMp4(
-  inputPath: string,
-  outputPath: string
-): Promise<{ ok: boolean; warning?: string }> {
-  try {
-    await execFileAsync('ffmpeg', [
-      '-y',
-      '-i',
-      inputPath,
-      '-c:v',
-      'libx264',
-      '-preset',
-      'veryfast',
-      '-crf',
-      '23',
-      '-movflags',
-      '+faststart',
-      '-pix_fmt',
-      'yuv420p',
-      '-c:a',
-      'aac',
-      '-b:a',
-      '128k',
-      outputPath,
-    ])
-    return { ok: true }
-  } catch {
-    return {
-      ok: false,
-      warning:
-        'Не удалось автоматически конвертировать в web-mp4. Используется исходный файл (проверьте ffmpeg на сервере).',
-    }
-  }
 }
 
 async function writeWebFileToDisk(file: File, destinationPath: string): Promise<void> {
@@ -110,39 +71,14 @@ export async function POST(request: NextRequest) {
     const targetPath = path.join(videosDir, filename)
 
     await writeWebFileToDisk(file, targetPath)
-
-    const webFilename = `${base}-${timestamp}-web.mp4`
-    const webTargetPath = path.join(videosDir, webFilename)
-    let transcode: { ok: boolean; warning?: string }
-    if (file.size > MAX_TRANSCODE_BYTES) {
-      transcode = {
-        ok: false,
-        warning:
-          'Видео загружено без перекодирования: файл слишком большой для безопасной серверной компрессии.',
-      }
-    } else {
-      transcode = await tryTranscodeToWebMp4(targetPath, webTargetPath)
-    }
-
-    const finalFileName = transcode.ok ? webFilename : filename
-    const finalUrl = `/videos/${finalFileName}`
-    if (transcode.ok) {
-      try {
-        await unlink(targetPath)
-      } catch {
-        // no-op
-      }
-    }
+    const finalFileName = filename
+    const finalUrl = `/videos/${filename}`
 
     return NextResponse.json({
       success: true,
       fileName: finalFileName,
       url: finalUrl,
       size: file.size,
-      sourceFileName: filename,
-      sourceUrl: `/videos/${filename}`,
-      transcoded: transcode.ok,
-      warning: transcode.warning || null,
     })
   } catch (error) {
     const message =
