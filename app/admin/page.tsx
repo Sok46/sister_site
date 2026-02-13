@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { useSearchParams } from 'next/navigation'
 import type { PlaylistItem } from '@/lib/playlist'
 import type { Post } from '@/lib/posts'
 import type { VideoLesson, YogaPackage } from '@/lib/yoga'
@@ -42,7 +41,6 @@ function isVideoFilePath(filePath: string): boolean {
 }
 
 export default function AdminPage() {
-  const searchParams = useSearchParams()
   const [token, setToken] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -61,6 +59,8 @@ export default function AdminPage() {
   const [serverProgress, setServerProgress] = useState(0)
   const [serverProgressMessage, setServerProgressMessage] = useState('')
   const [autoBooted, setAutoBooted] = useState(false)
+  const [initialTabParam, setInitialTabParam] = useState<string>('')
+  const [initialPathParam, setInitialPathParam] = useState<string>('')
 
   const [selectedYogaId, setSelectedYogaId] = useState<string | null>(null)
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null)
@@ -326,6 +326,17 @@ export default function AdminPage() {
   }, [uploadKind])
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const tab = (params.get('tab') || '').trim()
+    const path = (params.get('path') || '').trim()
+    setInitialTabParam(tab)
+    setInitialPathParam(path)
+    if (tab === 'files') {
+      setActiveTab('files')
+    }
+  }, [])
+
+  useEffect(() => {
     const savedToken = localStorage.getItem('admin-token') || ''
     if (savedToken) {
       setToken(savedToken)
@@ -342,19 +353,14 @@ export default function AdminPage() {
   }, [token])
 
   useEffect(() => {
-    const tab = searchParams.get('tab')
-    const path = searchParams.get('path') || ''
-    if (tab === 'files') {
-      setActiveTab('files')
-    }
     if (autoBooted || !token.trim()) return
 
     setAutoBooted(true)
     void loadSnapshot()
-    if (tab === 'files') {
-      void loadPublicFiles(path)
+    if (initialTabParam === 'files') {
+      void loadPublicFiles(initialPathParam)
     }
-  }, [searchParams, token, autoBooted])
+  }, [token, autoBooted, initialTabParam, initialPathParam])
 
   function updateSelectedYoga(patch: Partial<YogaPackage>) {
     if (!data || !selectedYoga) return

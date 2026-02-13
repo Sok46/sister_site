@@ -2,8 +2,7 @@
 
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
-import { useMemo } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useEffect, useMemo, useState } from 'react'
 
 const VideoPlayer = dynamic(() => import('@/components/VideoPlayer'), { ssr: false })
 
@@ -14,12 +13,19 @@ function isSafePublicVideo(src: string): boolean {
 }
 
 export default function AdminPlayerPage() {
-  const params = useSearchParams()
-  const src = useMemo(() => (params.get('src') || '').trim(), [params])
+  const [src, setSrc] = useState('')
+  const [fromRaw, setFromRaw] = useState('')
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    setSrc((params.get('src') || '').trim())
+    setFromRaw((params.get('from') || '').trim())
+  }, [])
+
   const from = useMemo(() => {
-    const raw = (params.get('from') || '').trim()
+    const raw = fromRaw
     return raw.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\.\.+/g, '')
-  }, [params])
+  }, [fromRaw])
   const valid = isSafePublicVideo(src)
   const backHref = `/admin?tab=files&path=${encodeURIComponent(from)}`
 
