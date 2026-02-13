@@ -279,7 +279,7 @@ export default function AdminPage() {
       if (backgroundProcessing && payloadUploadId) {
         setUploadStage('processing')
         keepProgressVisible = true
-        for (let i = 0; i < 360; i++) {
+        for (let i = 0; i < 1800; i++) {
           try {
             const progressRes = await fetch(
               `/api/admin/files?progressId=${encodeURIComponent(payloadUploadId)}`,

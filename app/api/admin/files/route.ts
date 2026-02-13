@@ -56,7 +56,7 @@ const PHOTO_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif'])
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.ogg'])
 const execFileAsync = promisify(execFile)
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024 // 1 GB
-const MAX_TRANSCODE_BYTES = 400 * 1024 * 1024 // 400 MB
+const LOW_PRIORITY_TRANSCODE_BYTES = 300 * 1024 * 1024 // 300 MB
 
 type UploadJobStatus = 'processing' | 'done' | 'failed'
 interface UploadJob {
@@ -77,6 +77,7 @@ type BackgroundTranscodeTask = {
   webPath: string
   sourcePublicUrl: string
   webPublicUrl: string
+  sourceSize: number
 }
 const transcodeQueue: BackgroundTranscodeTask[] = []
 let transcodeWorkerRunning = false
@@ -151,67 +152,89 @@ async function writeWebFileToDisk(file: File, destinationPath: string): Promise<
 async function tryTranscodeToWebMp4(
   inputPath: string,
   outputPath: string,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  lowPriority = false
 ): Promise<{ ok: boolean; warning?: string }> {
   try {
     const durationSeconds = await getVideoDurationSeconds(inputPath)
-    await new Promise<void>((resolve, reject) => {
-      const ffmpeg = spawn('ffmpeg', [
-        '-y',
-        '-i',
-        inputPath,
-        '-c:v',
-        'libx264',
-        '-preset',
-        'veryfast',
-        '-crf',
-        '25',
-        '-movflags',
-        '+faststart',
-        '-pix_fmt',
-        'yuv420p',
-        '-c:a',
-        'aac',
-        '-b:a',
-        '128k',
-        '-progress',
-        'pipe:1',
-        '-nostats',
-        outputPath,
-      ])
+    const ffmpegArgs = [
+      '-y',
+      '-i',
+      inputPath,
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '25',
+      '-movflags',
+      '+faststart',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '128k',
+      '-progress',
+      'pipe:1',
+      '-nostats',
+      outputPath,
+    ]
 
-      let stdoutBuffer = ''
-      ffmpeg.stdout.setEncoding('utf8')
-      ffmpeg.stdout.on('data', (chunk: string) => {
-        stdoutBuffer += chunk
-        const lines = stdoutBuffer.split('\n')
-        stdoutBuffer = lines.pop() || ''
-        for (const rawLine of lines) {
-          const line = rawLine.trim()
-          if (!line) continue
-          const [key, value] = line.split('=')
-          if (key === 'out_time_ms' && durationSeconds && durationSeconds > 0) {
-            const outSeconds = Number(value) / 1_000_000
-            if (Number.isFinite(outSeconds)) {
-              const percent = Math.max(
-                1,
-                Math.min(99, Math.round((outSeconds / durationSeconds) * 100))
-              )
-              onProgress?.(percent)
+    const variants: Array<{ cmd: string; args: string[] }> = lowPriority
+      ? [
+          { cmd: 'ionice', args: ['-c3', 'nice', '-n', '19', 'ffmpeg', ...ffmpegArgs] },
+          { cmd: 'nice', args: ['-n', '19', 'ffmpeg', ...ffmpegArgs] },
+          { cmd: 'ffmpeg', args: ffmpegArgs },
+        ]
+      : [{ cmd: 'ffmpeg', args: ffmpegArgs }]
+
+    let lastError: Error | null = null
+    for (const variant of variants) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const ffmpeg = spawn(variant.cmd, variant.args)
+
+          let stdoutBuffer = ''
+          ffmpeg.stdout.setEncoding('utf8')
+          ffmpeg.stdout.on('data', (chunk: string) => {
+            stdoutBuffer += chunk
+            const lines = stdoutBuffer.split('\n')
+            stdoutBuffer = lines.pop() || ''
+            for (const rawLine of lines) {
+              const line = rawLine.trim()
+              if (!line) continue
+              const [key, value] = line.split('=')
+              if (key === 'out_time_ms' && durationSeconds && durationSeconds > 0) {
+                const outSeconds = Number(value) / 1_000_000
+                if (Number.isFinite(outSeconds)) {
+                  const percent = Math.max(
+                    1,
+                    Math.min(99, Math.round((outSeconds / durationSeconds) * 100))
+                  )
+                  onProgress?.(percent)
+                }
+              }
+              if (key === 'progress' && value === 'end') {
+                onProgress?.(100)
+              }
             }
-          }
-          if (key === 'progress' && value === 'end') {
-            onProgress?.(100)
-          }
-        }
-      })
+          })
 
-      ffmpeg.on('error', reject)
-      ffmpeg.on('close', (code) => {
-        if (code === 0) resolve()
-        else reject(new Error(`ffmpeg exited with code ${code}`))
-      })
-    })
+          ffmpeg.on('error', reject)
+          ffmpeg.on('close', (code) => {
+            if (code === 0) resolve()
+            else reject(new Error(`${variant.cmd} exited with code ${code}`))
+          })
+        })
+        lastError = null
+        break
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error('transcode failed')
+      }
+    }
+
+    if (lastError) throw lastError
     return { ok: true }
   } catch {
     return {
@@ -236,10 +259,15 @@ async function processTranscodeQueue() {
         message: 'Фоновое перекодирование запущено',
       })
 
-      const transcode = await tryTranscodeToWebMp4(task.sourcePath, task.webPath, (progress) => {
-        const mapped = 12 + Math.round((Math.max(0, Math.min(100, progress)) / 100) * 86)
-        setJob(task.uploadId, { progress: mapped, message: 'Фоновое перекодирование видео' })
-      })
+      const transcode = await tryTranscodeToWebMp4(
+        task.sourcePath,
+        task.webPath,
+        (progress) => {
+          const mapped = 12 + Math.round((Math.max(0, Math.min(100, progress)) / 100) * 86)
+          setJob(task.uploadId, { progress: mapped, message: 'Фоновое перекодирование видео' })
+        },
+        task.sourceSize > LOW_PRIORITY_TRANSCODE_BYTES
+      )
 
       if (transcode.ok) {
         try {
@@ -428,10 +456,6 @@ export async function POST(request: NextRequest) {
         warning =
           'Видео загружено без фоновой обработки: не передан uploadId.'
         setJob(uploadId, { progress: 95, message: 'Пропуск фоновой обработки' })
-      } else if (file.size > MAX_TRANSCODE_BYTES) {
-        warning =
-          'Видео загружено без перекодирования: файл слишком большой для фоновой компрессии на текущем сервере.'
-        setJob(uploadId, { progress: 100, status: 'done', message: 'Фоновая компрессия пропущена', finalUrl: sourcePublicUrl })
       } else {
         backgroundProcessing = true
         setJob(uploadId, {
@@ -446,8 +470,12 @@ export async function POST(request: NextRequest) {
           webPath,
           sourcePublicUrl,
           webPublicUrl: `/${webRel}`,
+          sourceSize: file.size,
         })
-        warning = 'Видео загружено. Перекодирование запущено в фоне.'
+        warning =
+          file.size > LOW_PRIORITY_TRANSCODE_BYTES
+            ? 'Видео загружено. Перекодирование запущено в фоне с низким приоритетом.'
+            : 'Видео загружено. Перекодирование запущено в фоне.'
       }
     }
 
