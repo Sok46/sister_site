@@ -9,7 +9,9 @@ import os
 import re
 import subprocess
 import threading
-from datetime import date, datetime
+import hashlib
+import secrets
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, Literal, Optional
 
@@ -40,6 +42,8 @@ PUBLIC_DIR = BASE_DIR / "public"
 PACKAGES_FILE = BASE_DIR / "content" / "yoga" / "packages.json"
 VIDEOS_DIR = BASE_DIR / "public" / "videos"
 PAGE_SIZE_PKGS = 5
+ADMIN_ACCESS_TOKEN_FILE = BASE_DIR / "content" / "admin" / "access-token.json"
+ADMIN_ACCESS_TOKEN_TTL_HOURS = 4
 
 # Простое состояние диалога по chat_id:
 #   None                 — обычный режим
@@ -273,6 +277,9 @@ def make_main_keyboard() -> types.ReplyKeyboardMarkup:
     kb.row(
         types.KeyboardButton("Управление уроками"),
     )
+    kb.row(
+        types.KeyboardButton("Системные функции"),
+    )
     return kb
 
 
@@ -321,6 +328,33 @@ def make_blog_keyboard() -> types.ReplyKeyboardMarkup:
     kb.row(types.KeyboardButton("Управление файлами"))
     kb.row(types.KeyboardButton("⬅️ В главное меню"))
     return kb
+
+
+def make_system_keyboard() -> types.ReplyKeyboardMarkup:
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row(types.KeyboardButton("Деплой"))
+    kb.row(types.KeyboardButton("Сформировать токен"))
+    kb.row(types.KeyboardButton("⬅️ В главное меню"))
+    return kb
+
+
+def generate_site_admin_token() -> tuple[str, str]:
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = datetime.utcnow()
+    expires_at = now + timedelta(hours=ADMIN_ACCESS_TOKEN_TTL_HOURS)
+
+    ADMIN_ACCESS_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "tokenHash": token_hash,
+        "createdAt": now.isoformat() + "Z",
+        "expiresAt": expires_at.isoformat() + "Z",
+        "source": "telegram-bot",
+    }
+    with open(ADMIN_ACCESS_TOKEN_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    return token, payload["expiresAt"]
 
 
 def create_blog_post_file(markdown_text: str) -> str:
@@ -713,7 +747,8 @@ def cmd_start(message):
         "Главные разделы:\n"
         "• «Управление расписанием» — слоты, записи, отмены\n"
         "• «Управление блогом» — работа с постами\n"
-        "• «Управление уроками» — пакеты видеоуроков йоги\n\n"
+        "• «Управление уроками» — пакеты видеоуроков йоги\n"
+        "• «Системные функции» — деплой и временный токен для админки сайта\n\n"
         "Технически слоты хранятся в available-slots.json, записи — в bookings.json,\n"
         "пакеты уроков — в content/yoga/packages.json."
     )
@@ -765,6 +800,30 @@ def cmd_deploy(message):
     if not ensure_admin(chat_id):
         return
     threading.Thread(target=run_site_rebuild, args=(chat_id,), daemon=True).start()
+
+
+@bot.message_handler(func=lambda m: m.text in ["Деплой", "Сформировать токен"])
+def handle_system_actions(message):
+    chat_id = message.chat.id
+    if not ensure_admin(chat_id):
+        return
+
+    text = (message.text or "").strip()
+    if text == "Деплой":
+        threading.Thread(target=run_site_rebuild, args=(chat_id,), daemon=True).start()
+        return
+
+    if text == "Сформировать токен":
+        token, expires_at = generate_site_admin_token()
+        bot.send_message(
+            chat_id,
+            "🔐 Новый токен для админки сайта сформирован.\n\n"
+            f"`{token}`\n\n"
+            f"Срок действия: {ADMIN_ACCESS_TOKEN_TTL_HOURS} часа(ов), до `{expires_at}` UTC.\n"
+            "Если сформировать токен снова — старый сразу перестанет работать.",
+            parse_mode="Markdown",
+        )
+        return
 
 
 def parse_date_time(text: str):
@@ -1026,7 +1085,7 @@ def handle_buttons(message):
         return
 
 
-@bot.message_handler(func=lambda m: m.text in ["Управление расписанием", "Управление блогом", "Управление уроками", "⬅️ В главное меню"])
+@bot.message_handler(func=lambda m: m.text in ["Управление расписанием", "Управление блогом", "Управление уроками", "Системные функции", "⬅️ В главное меню"])
 def handle_main_menus(message):
     chat_id = message.chat.id
     text = (message.text or "").strip()
@@ -1068,6 +1127,17 @@ def handle_main_menus(message):
             "• «Добавить видео в пакет» — добавить видеоурок\n"
             "• «Удалить видео из пакета» — убрать урок из пакета",
             reply_markup=make_yoga_keyboard(),
+        )
+        return
+
+    if text == "Системные функции":
+        chat_state[chat_id] = None
+        bot.send_message(
+            chat_id,
+            "Раздел «Системные функции».\n\n"
+            "• «Деплой» — sync контента, сборка и перезапуск сайта\n"
+            "• «Сформировать токен» — создать временный токен для входа в админку сайта (4 часа).",
+            reply_markup=make_system_keyboard(),
         )
         return
 
