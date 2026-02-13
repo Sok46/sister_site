@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { mkdir, writeFile } from 'fs/promises'
+import { mkdir, unlink } from 'fs/promises'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import path from 'path'
 import { requireAdminToken } from '@/lib/admin-auth'
+import { createWriteStream } from 'fs'
+import { Readable } from 'stream'
+import { pipeline } from 'stream/promises'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -11,6 +14,7 @@ export const dynamic = 'force-dynamic'
 const ALLOWED_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm'])
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024 // 1 GB
 const execFileAsync = promisify(execFile)
+const MAX_TRANSCODE_BYTES = 400 * 1024 * 1024 // 400 MB
 
 function sanitizeBasename(input: string): string {
   const base = input
@@ -58,6 +62,13 @@ async function tryTranscodeToWebMp4(
   }
 }
 
+async function writeWebFileToDisk(file: File, destinationPath: string): Promise<void> {
+  const webStream = file.stream()
+  const nodeReadable = Readable.fromWeb(webStream as any)
+  const nodeWritable = createWriteStream(destinationPath, { flags: 'w' })
+  await pipeline(nodeReadable, nodeWritable)
+}
+
 export async function POST(request: NextRequest) {
   const denied = requireAdminToken(request)
   if (denied) return denied
@@ -98,15 +109,30 @@ export async function POST(request: NextRequest) {
     const filename = `${base}-${timestamp}${ext}`
     const targetPath = path.join(videosDir, filename)
 
-    const bytes = Buffer.from(await file.arrayBuffer())
-    await writeFile(targetPath, bytes)
+    await writeWebFileToDisk(file, targetPath)
 
     const webFilename = `${base}-${timestamp}-web.mp4`
     const webTargetPath = path.join(videosDir, webFilename)
-    const transcode = await tryTranscodeToWebMp4(targetPath, webTargetPath)
+    let transcode: { ok: boolean; warning?: string }
+    if (file.size > MAX_TRANSCODE_BYTES) {
+      transcode = {
+        ok: false,
+        warning:
+          'Видео загружено без перекодирования: файл слишком большой для безопасной серверной компрессии.',
+      }
+    } else {
+      transcode = await tryTranscodeToWebMp4(targetPath, webTargetPath)
+    }
 
     const finalFileName = transcode.ok ? webFilename : filename
     const finalUrl = `/videos/${finalFileName}`
+    if (transcode.ok) {
+      try {
+        await unlink(targetPath)
+      } catch {
+        // no-op
+      }
+    }
 
     return NextResponse.json({
       success: true,

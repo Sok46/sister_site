@@ -3,6 +3,9 @@ import { promises as fs } from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { spawn } from 'child_process'
+import { createWriteStream } from 'fs'
+import { Readable } from 'stream'
+import { pipeline } from 'stream/promises'
 import { NextRequest, NextResponse } from 'next/server'
 import { requireAdminToken } from '@/lib/admin-auth'
 
@@ -52,6 +55,8 @@ const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.ogv'])
 const PHOTO_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif'])
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.ogg'])
 const execFileAsync = promisify(execFile)
+const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024 // 1 GB
+const MAX_TRANSCODE_BYTES = 400 * 1024 * 1024 // 400 MB
 
 type UploadJobStatus = 'processing' | 'done' | 'failed'
 interface UploadJob {
@@ -121,6 +126,13 @@ function isAllowedExtension(kind: 'video' | 'photo' | 'audio', ext: string): boo
   if (kind === 'video') return VIDEO_EXTENSIONS.has(ext)
   if (kind === 'photo') return PHOTO_EXTENSIONS.has(ext)
   return AUDIO_EXTENSIONS.has(ext)
+}
+
+async function writeWebFileToDisk(file: File, destinationPath: string): Promise<void> {
+  const webStream = file.stream()
+  const nodeReadable = Readable.fromWeb(webStream as any)
+  const nodeWritable = createWriteStream(destinationPath, { flags: 'w' })
+  await pipeline(nodeReadable, nodeWritable)
 }
 
 async function tryTranscodeToWebMp4(
@@ -309,6 +321,12 @@ export async function POST(request: NextRequest) {
     if (file.size <= 0) {
       return NextResponse.json({ error: 'Файл пустой' }, { status: 400 })
     }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return NextResponse.json(
+        { error: 'Файл слишком большой. Максимум 1 ГБ.' },
+        { status: 400 }
+      )
+    }
 
     const originalName = sanitizeFileName(file.name || 'file')
     const ext = extensionOf(originalName)
@@ -321,8 +339,7 @@ export async function POST(request: NextRequest) {
 
     const sourceName = `${Date.now()}-${originalName}`
     const sourcePath = path.join(targetDir, sourceName)
-    const bytes = Buffer.from(await file.arrayBuffer())
-    await fs.writeFile(sourcePath, bytes)
+    await writeWebFileToDisk(file, sourcePath)
     setJob(uploadId, { progress: 8, message: 'Файл сохранен на сервере' })
 
     let finalName = sourceName
@@ -335,25 +352,31 @@ export async function POST(request: NextRequest) {
       const baseName = sourceName.replace(/\.[^/.]+$/, '')
       const webName = `${baseName}-web.mp4`
       const webPath = path.join(targetDir, webName)
-      setJob(uploadId, { progress: 12, message: 'Запущено перекодирование видео' })
-      const transcode = await tryTranscodeToWebMp4(sourcePath, webPath, (progress) => {
-        const mapped = 12 + Math.round((Math.max(0, Math.min(100, progress)) / 100) * 86)
-        setJob(uploadId, { progress: mapped, message: 'Перекодирование видео' })
-      })
-      if (transcode.ok) {
-        finalName = webName
-        finalPath = webPath
-        try {
-          await fs.unlink(sourcePath)
-        } catch {
-          // Если не удалось удалить исходник, просто отдадим ссылку на него.
-          sourcePublicUrl = `/${normalizeRelative(path.relative(publicRoot, sourcePath))}`
-        }
-        transcoded = true
-        setJob(uploadId, { progress: 99, message: 'Финализация файла' })
+      if (file.size > MAX_TRANSCODE_BYTES) {
+        warning =
+          'Видео загружено без перекодирования: файл слишком большой для безопасной серверной компрессии на текущем сервере.'
+        setJob(uploadId, { progress: 95, message: 'Пропуск перекодирования (слишком большой файл)' })
       } else {
-        warning = transcode.warning
-        setJob(uploadId, { progress: 95, message: 'Перекодирование недоступно, используется исходник' })
+        setJob(uploadId, { progress: 12, message: 'Запущено перекодирование видео' })
+        const transcode = await tryTranscodeToWebMp4(sourcePath, webPath, (progress) => {
+          const mapped = 12 + Math.round((Math.max(0, Math.min(100, progress)) / 100) * 86)
+          setJob(uploadId, { progress: mapped, message: 'Перекодирование видео' })
+        })
+        if (transcode.ok) {
+          finalName = webName
+          finalPath = webPath
+          try {
+            await fs.unlink(sourcePath)
+          } catch {
+            // Если не удалось удалить исходник, просто отдадим ссылку на него.
+            sourcePublicUrl = `/${normalizeRelative(path.relative(publicRoot, sourcePath))}`
+          }
+          transcoded = true
+          setJob(uploadId, { progress: 99, message: 'Финализация файла' })
+        } else {
+          warning = transcode.warning
+          setJob(uploadId, { progress: 95, message: 'Перекодирование недоступно, используется исходник' })
+        }
       }
     }
 
