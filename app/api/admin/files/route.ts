@@ -65,10 +65,21 @@ interface UploadJob {
   progress: number
   message: string
   updatedAt: number
+  finalUrl?: string
+  warning?: string
 }
 
 const uploadJobs = new Map<string, UploadJob>()
 const JOB_TTL_MS = 30 * 60 * 1000
+type BackgroundTranscodeTask = {
+  uploadId: string
+  sourcePath: string
+  webPath: string
+  sourcePublicUrl: string
+  webPublicUrl: string
+}
+const transcodeQueue: BackgroundTranscodeTask[] = []
+let transcodeWorkerRunning = false
 
 function nowMs(): number {
   return Date.now()
@@ -90,7 +101,7 @@ function normalizeJobId(input: string | null): string {
 
 function setJob(
   id: string,
-  patch: Partial<Pick<UploadJob, 'status' | 'progress' | 'message'>>
+  patch: Partial<Pick<UploadJob, 'status' | 'progress' | 'message' | 'finalUrl' | 'warning'>>
 ) {
   if (!id) return
   const prev = uploadJobs.get(id)
@@ -100,6 +111,8 @@ function setJob(
     progress: Math.max(0, Math.min(100, patch.progress ?? prev?.progress ?? 0)),
     message: patch.message || prev?.message || '',
     updatedAt: nowMs(),
+    finalUrl: patch.finalUrl ?? prev?.finalUrl,
+    warning: patch.warning ?? prev?.warning,
   }
   uploadJobs.set(id, next)
 }
@@ -209,6 +222,58 @@ async function tryTranscodeToWebMp4(
   }
 }
 
+async function processTranscodeQueue() {
+  if (transcodeWorkerRunning) return
+  transcodeWorkerRunning = true
+  try {
+    while (transcodeQueue.length > 0) {
+      const task = transcodeQueue.shift()
+      if (!task) continue
+
+      setJob(task.uploadId, {
+        status: 'processing',
+        progress: 12,
+        message: 'Фоновое перекодирование запущено',
+      })
+
+      const transcode = await tryTranscodeToWebMp4(task.sourcePath, task.webPath, (progress) => {
+        const mapped = 12 + Math.round((Math.max(0, Math.min(100, progress)) / 100) * 86)
+        setJob(task.uploadId, { progress: mapped, message: 'Фоновое перекодирование видео' })
+      })
+
+      if (transcode.ok) {
+        try {
+          await fs.unlink(task.sourcePath)
+        } catch {
+          // no-op: если не удалилось, просто оставим исходник
+        }
+
+        setJob(task.uploadId, {
+          status: 'done',
+          progress: 100,
+          message: 'Фоновая обработка завершена',
+          finalUrl: task.webPublicUrl,
+        })
+      } else {
+        setJob(task.uploadId, {
+          status: 'failed',
+          progress: 100,
+          message: 'Фоновая обработка завершилась ошибкой',
+          warning: transcode.warning,
+          finalUrl: task.sourcePublicUrl,
+        })
+      }
+    }
+  } finally {
+    transcodeWorkerRunning = false
+  }
+}
+
+function enqueueTranscodeTask(task: BackgroundTranscodeTask) {
+  transcodeQueue.push(task)
+  void processTranscodeQueue()
+}
+
 function getSafePath(publicRoot: string, relativePath: string): string {
   const resolved = path.resolve(publicRoot, relativePath || '.')
   const safePrefix = publicRoot.endsWith(path.sep) ? publicRoot : `${publicRoot}${path.sep}`
@@ -235,6 +300,8 @@ export async function GET(request: NextRequest) {
         status: job.status,
         progress: job.progress,
         message: job.message,
+        finalUrl: job.finalUrl || null,
+        warning: job.warning || null,
       })
     }
 
@@ -347,42 +414,48 @@ export async function POST(request: NextRequest) {
     let warning: string | undefined
     let sourcePublicUrl: string | null = null
     let transcoded = false
+    let backgroundProcessing = false
 
     if (kind === 'video') {
       const baseName = sourceName.replace(/\.[^/.]+$/, '')
       const webName = `${baseName}-web.mp4`
       const webPath = path.join(targetDir, webName)
-      if (file.size > MAX_TRANSCODE_BYTES) {
+      const sourceRel = normalizeRelative(path.relative(publicRoot, sourcePath))
+      const webRel = normalizeRelative(path.relative(publicRoot, webPath))
+      sourcePublicUrl = `/${sourceRel}`
+
+      if (!uploadId) {
         warning =
-          'Видео загружено без перекодирования: файл слишком большой для безопасной серверной компрессии на текущем сервере.'
-        setJob(uploadId, { progress: 95, message: 'Пропуск перекодирования (слишком большой файл)' })
+          'Видео загружено без фоновой обработки: не передан uploadId.'
+        setJob(uploadId, { progress: 95, message: 'Пропуск фоновой обработки' })
+      } else if (file.size > MAX_TRANSCODE_BYTES) {
+        warning =
+          'Видео загружено без перекодирования: файл слишком большой для фоновой компрессии на текущем сервере.'
+        setJob(uploadId, { progress: 100, status: 'done', message: 'Фоновая компрессия пропущена', finalUrl: sourcePublicUrl })
       } else {
-        setJob(uploadId, { progress: 12, message: 'Запущено перекодирование видео' })
-        const transcode = await tryTranscodeToWebMp4(sourcePath, webPath, (progress) => {
-          const mapped = 12 + Math.round((Math.max(0, Math.min(100, progress)) / 100) * 86)
-          setJob(uploadId, { progress: mapped, message: 'Перекодирование видео' })
+        backgroundProcessing = true
+        setJob(uploadId, {
+          status: 'processing',
+          progress: 10,
+          message: 'Видео загружено. Ожидание фоновой обработки',
+          finalUrl: sourcePublicUrl,
         })
-        if (transcode.ok) {
-          finalName = webName
-          finalPath = webPath
-          try {
-            await fs.unlink(sourcePath)
-          } catch {
-            // Если не удалось удалить исходник, просто отдадим ссылку на него.
-            sourcePublicUrl = `/${normalizeRelative(path.relative(publicRoot, sourcePath))}`
-          }
-          transcoded = true
-          setJob(uploadId, { progress: 99, message: 'Финализация файла' })
-        } else {
-          warning = transcode.warning
-          setJob(uploadId, { progress: 95, message: 'Перекодирование недоступно, используется исходник' })
-        }
+        enqueueTranscodeTask({
+          uploadId,
+          sourcePath,
+          webPath,
+          sourcePublicUrl,
+          webPublicUrl: `/${webRel}`,
+        })
+        warning = 'Видео загружено. Перекодирование запущено в фоне.'
       }
     }
 
     const finalStat = await fs.stat(finalPath)
     const relativePath = normalizeRelative(path.relative(publicRoot, finalPath))
-    setJob(uploadId, { status: 'done', progress: 100, message: 'Готово' })
+    if (!backgroundProcessing) {
+      setJob(uploadId, { status: 'done', progress: 100, message: 'Готово' })
+    }
     return NextResponse.json({
       success: true,
       relativePath,
@@ -394,6 +467,7 @@ export async function POST(request: NextRequest) {
       transcoded,
       warning: warning || null,
       uploadId: uploadId || null,
+      backgroundProcessing,
     })
   } catch (error) {
     const failedUploadId = normalizeJobId(request.nextUrl.searchParams.get('uploadId'))

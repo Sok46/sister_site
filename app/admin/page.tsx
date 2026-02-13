@@ -180,6 +180,7 @@ export default function AdminPage() {
     setServerProgressMessage('Ожидание обработки на сервере')
     const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     let pollTimer: ReturnType<typeof setInterval> | null = null
+    let keepProgressVisible = false
     try {
       const formData = new FormData()
       formData.append('file', fileToUpload)
@@ -232,11 +233,34 @@ export default function AdminPage() {
         }
 
         xhr.onload = () => {
+          const contentType = (xhr.getResponseHeader('content-type') || '').toLowerCase()
           let parsed: Record<string, unknown> = {}
-          try {
-            parsed = JSON.parse(xhr.responseText || '{}') as Record<string, unknown>
-          } catch {
-            reject(new Error('Некорректный ответ сервера'))
+
+          if (contentType.includes('application/json')) {
+            try {
+              parsed = JSON.parse(xhr.responseText || '{}') as Record<string, unknown>
+            } catch {
+              reject(new Error('Сервер вернул поврежденный JSON-ответ'))
+              return
+            }
+          } else {
+            const text = (xhr.responseText || '').trim()
+            const shortText = text ? text.slice(0, 180) : ''
+            if (xhr.status === 413) {
+              reject(
+                new Error(
+                  'Сервер отклонил файл: слишком большой размер запроса (HTTP 413). Увеличьте client_max_body_size в Nginx.'
+                )
+              )
+              return
+            }
+            reject(
+              new Error(
+                `Некорректный ответ сервера (HTTP ${xhr.status}). ${
+                  shortText || 'Проверьте логи Nginx/PM2.'
+                }`
+              )
+            )
             return
           }
 
@@ -249,6 +273,50 @@ export default function AdminPage() {
 
         xhr.send(formData)
       })
+
+      const payloadUploadId = String(payload.uploadId || uploadId)
+      const backgroundProcessing = Boolean(payload.backgroundProcessing)
+      if (backgroundProcessing && payloadUploadId) {
+        setUploadStage('processing')
+        keepProgressVisible = true
+        for (let i = 0; i < 360; i++) {
+          try {
+            const progressRes = await fetch(
+              `/api/admin/files?progressId=${encodeURIComponent(payloadUploadId)}`,
+              {
+                headers: {
+                  'x-admin-token': token.trim(),
+                },
+              }
+            )
+            if (progressRes.ok) {
+              const progressPayload = await progressRes.json()
+              const nextProgress = Number(progressPayload.progress || 0)
+              if (Number.isFinite(nextProgress)) {
+                setServerProgress(Math.max(0, Math.min(100, nextProgress)))
+              }
+              const msg = String(progressPayload.message || '')
+              if (msg) setServerProgressMessage(msg)
+
+              const status = String(progressPayload.status || '')
+              if (status === 'done' || status === 'failed') {
+                const finalUrl = String(progressPayload.finalUrl || '')
+                const extraWarning = String(progressPayload.warning || '')
+                const doneParts = ['Фоновая обработка завершена']
+                if (status === 'done' && finalUrl) doneParts.push(`Итоговый файл: ${finalUrl}`)
+                if (status === 'failed' && extraWarning) doneParts.push(extraWarning)
+                setSaved(doneParts.join('. '))
+                keepProgressVisible = false
+                break
+              }
+            }
+          } catch {
+            // ignore transient polling failures
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+        }
+      }
+
       const messageParts = [`Файл загружен: ${payload.fileName}`]
       if (payload.transcoded) {
         messageParts.push('Видео перекодировано в web-mp4')
@@ -259,20 +327,24 @@ export default function AdminPage() {
       setSaved(messageParts.join('. '))
       setFileToUpload(null)
       setUploadProgress(100)
-      setServerProgress(100)
-      setServerProgressMessage('Готово')
+      if (!backgroundProcessing) {
+        setServerProgress(100)
+        setServerProgressMessage('Готово')
+      }
       await loadPublicFiles(currentPublicPath)
     } catch (err) {
       setPublicError(err instanceof Error ? err.message : 'Ошибка загрузки')
     } finally {
       if (pollTimer) clearInterval(pollTimer)
       setUploading(false)
-      setTimeout(() => {
-        setUploadProgress(0)
-        setServerProgress(0)
-        setServerProgressMessage('')
-        setUploadStage('idle')
-      }, 800)
+      if (!keepProgressVisible) {
+        setTimeout(() => {
+          setUploadProgress(0)
+          setServerProgress(0)
+          setServerProgressMessage('')
+          setUploadStage('idle')
+        }, 800)
+      }
     }
   }
 
