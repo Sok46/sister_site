@@ -18,20 +18,20 @@ interface VideoPlayerProps {
   storageKey: string
 }
 
-function mimeFromUrl(url: string): string {
+function mimeFromUrl(url: string): string | undefined {
   const ext = url.split('.').pop()?.toLowerCase()
   switch (ext) {
-    case 'mp4':
-      return 'video/mp4'
     case 'webm':
       return 'video/webm'
     case 'mov':
-      return 'video/mp4' // большинство браузеров играют MOV как mp4
+      return 'video/quicktime'
     case 'ogg':
     case 'ogv':
       return 'video/ogg'
     default:
-      return 'video/mp4'
+      // Для mp4/m4v и прочих оставляем тип пустым:
+      // браузер сам корректно определит контейнер/кодек.
+      return undefined
   }
 }
 
@@ -54,12 +54,16 @@ export default function VideoPlayer({ src, qualities, storageKey }: VideoPlayerP
     // Собираем источники
     const hasQualities = qualities && qualities.length > 1
     const sources = hasQualities
-      ? qualities.map((q) => ({
-          src: q.src,
-          type: mimeFromUrl(q.src),
-          size: q.size,
-        }))
-      : [{ src, type: mimeFromUrl(src), size: 0 }]
+      ? qualities.map((q) => {
+          const sourceType = mimeFromUrl(q.src)
+          return sourceType
+            ? { src: q.src, type: sourceType, size: q.size }
+            : { src: q.src, size: q.size }
+        })
+      : (() => {
+          const sourceType = mimeFromUrl(src)
+          return sourceType ? [{ src, type: sourceType, size: 0 }] : [{ src, size: 0 }]
+        })()
 
     // Инициализируем Plyr
     const qualityOptions = hasQualities ? qualities.map((q) => q.size) : []
