@@ -56,6 +56,8 @@ export default function AdminPage() {
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadStage, setUploadStage] = useState<'idle' | 'sending' | 'processing'>('idle')
+  const [serverProgress, setServerProgress] = useState(0)
+  const [serverProgressMessage, setServerProgressMessage] = useState('')
   const [autoBooted, setAutoBooted] = useState(false)
   const [initialTabParam, setInitialTabParam] = useState<string>('')
   const [initialPathParam, setInitialPathParam] = useState<string>('')
@@ -174,6 +176,8 @@ export default function AdminPage() {
     setUploading(true)
     setUploadProgress(0)
     setUploadStage('sending')
+    setServerProgress(0)
+    setServerProgressMessage('Сохранение файла на сервере')
     const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     try {
       const formData = new FormData()
@@ -197,6 +201,7 @@ export default function AdminPage() {
         xhr.upload.onload = () => {
           setUploadStage('processing')
           setUploadProgress(96)
+          setServerProgress(60)
         }
 
         xhr.onerror = () => {
@@ -252,6 +257,8 @@ export default function AdminPage() {
       setSaved(messageParts.join('. '))
       setFileToUpload(null)
       setUploadProgress(100)
+      setServerProgress(100)
+      setServerProgressMessage('Готово')
       await loadPublicFiles(currentPublicPath)
     } catch (err) {
       setPublicError(err instanceof Error ? err.message : 'Ошибка загрузки')
@@ -259,6 +266,8 @@ export default function AdminPage() {
       setUploading(false)
       setTimeout(() => {
         setUploadProgress(0)
+        setServerProgress(0)
+        setServerProgressMessage('')
         setUploadStage('idle')
       }, 800)
     }
@@ -946,8 +955,17 @@ export default function AdminPage() {
                               {uploadStage === 'sending'
                                 ? `Отправка файла: ${uploadProgress}%`
                                 : uploadStage === 'processing'
-                                ? `Файл получен. Завершение загрузки... ${uploadProgress}%`
+                                ? `Файл получен. Обработка на сервере... ${uploadProgress}%`
                                 : `Загрузка: ${uploadProgress}%`}
+                            </p>
+                            <div className="h-2 rounded bg-gray-200 overflow-hidden mt-2">
+                              <div
+                                className="h-full bg-emerald-500 transition-all duration-150"
+                                style={{ width: `${serverProgress}%` }}
+                              />
+                            </div>
+                            <p className="text-xs text-gray-600 mt-1">
+                              Сервер: {serverProgress}%{serverProgressMessage ? ` · ${serverProgressMessage}` : ''}
                             </p>
                           </div>
                         )}
