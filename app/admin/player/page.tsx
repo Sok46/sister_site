@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
-import { useMemo } from 'react'
+import { Suspense, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 
 const VideoPlayer = dynamic(() => import('@/components/VideoPlayer'), { ssr: false })
@@ -13,7 +13,7 @@ function isSafePublicVideo(src: string): boolean {
   return /\.(mp4|webm|mov|m4v|ogv)$/i.test(src)
 }
 
-export default function AdminPlayerPage() {
+function AdminPlayerPageContent() {
   const params = useSearchParams()
   const src = useMemo(() => (params.get('src') || '').trim(), [params])
   const from = useMemo(() => {
@@ -56,5 +56,13 @@ export default function AdminPlayerPage() {
         )}
       </div>
     </div>
+  )
+}
+
+export default function AdminPlayerPage() {
+  return (
+    <Suspense fallback={<div className="section-padding">Загрузка...</div>}>
+      <AdminPlayerPageContent />
+    </Suspense>
   )
 }

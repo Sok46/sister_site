@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import type { PlaylistItem } from '@/lib/playlist'
@@ -41,7 +41,7 @@ function isVideoFilePath(filePath: string): boolean {
   return /\.(mp4|webm|mov|m4v|ogv)$/i.test(filePath)
 }
 
-export default function AdminPage() {
+function AdminPageContent() {
   const searchParams = useSearchParams()
   const [token, setToken] = useState('')
   const [loading, setLoading] = useState(false)
@@ -996,5 +996,13 @@ export default function AdminPage() {
         )}
       </div>
     </div>
+  )
+}
+
+export default function AdminPage() {
+  return (
+    <Suspense fallback={<div className="section-padding">Загрузка...</div>}>
+      <AdminPageContent />
+    </Suspense>
   )
 }
