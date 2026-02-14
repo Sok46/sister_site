@@ -7,7 +7,7 @@ import type { PlaylistItem } from '@/lib/playlist'
 import type { Post } from '@/lib/posts'
 import type { VideoLesson, YogaPackage } from '@/lib/yoga'
 
-type Tab = 'yoga' | 'playlist' | 'posts' | 'files'
+type Tab = 'yoga' | 'playlist' | 'posts' | 'files' | 'bookings'
 
 interface Snapshot {
   yogaPackages: YogaPackage[]
@@ -23,6 +23,18 @@ interface PublicFileEntry {
   updatedAt: string
   publicUrl: string | null
 }
+
+interface AdminBooking {
+  id: string
+  date: string
+  time: string
+  name: string
+  phone: string
+  comment: string
+  createdAt: string
+}
+
+type SlotsByDate = Record<string, string[]>
 
 function asNumber(value: string): number {
   const parsed = Number(value)
@@ -58,6 +70,14 @@ function AdminPageContent() {
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [autoBooted, setAutoBooted] = useState(false)
+  const [bookingLoading, setBookingLoading] = useState(false)
+  const [bookingError, setBookingError] = useState('')
+  const [bookingSlots, setBookingSlots] = useState<SlotsByDate>({})
+  const [bookings, setBookings] = useState<AdminBooking[]>([])
+  const [slotDateInput, setSlotDateInput] = useState('')
+  const [slotStartInput, setSlotStartInput] = useState('')
+  const [slotEndInput, setSlotEndInput] = useState('')
+  const [bookingFilterDate, setBookingFilterDate] = useState('')
 
   const [selectedYogaId, setSelectedYogaId] = useState<string | null>(null)
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null)
@@ -256,6 +276,55 @@ function AdminPageContent() {
     }
   }
 
+  async function loadBookingsAdmin() {
+    setBookingLoading(true)
+    setBookingError('')
+    try {
+      const response = await fetch('/api/admin/bookings', {
+        headers: {
+          'x-admin-token': token.trim(),
+        },
+      })
+      const payload = await response.json()
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || 'Не удалось загрузить записи')
+      }
+      setBookingSlots(payload.slots || {})
+      setBookings(payload.bookings || [])
+    } catch (err) {
+      setBookingError(err instanceof Error ? err.message : 'Ошибка загрузки')
+    } finally {
+      setBookingLoading(false)
+    }
+  }
+
+  async function runBookingsAction(body: Record<string, unknown>, successMessage: string) {
+    setBookingLoading(true)
+    setBookingError('')
+    setSaved('')
+    try {
+      const response = await fetch('/api/admin/bookings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-token': token.trim(),
+        },
+        body: JSON.stringify(body),
+      })
+      const payload = await response.json()
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || 'Не удалось выполнить действие')
+      }
+      setBookingSlots(payload.slots || {})
+      setBookings(payload.bookings || [])
+      setSaved(successMessage)
+    } catch (err) {
+      setBookingError(err instanceof Error ? err.message : 'Ошибка действия')
+    } finally {
+      setBookingLoading(false)
+    }
+  }
+
   const uploadKind = useMemo(() => {
     const first = (currentPublicPath || '').split('/')[0]
     if (first === 'videos') return 'video'
@@ -346,6 +415,18 @@ function AdminPageContent() {
     })
   }
 
+  const bookingDates = useMemo(
+    () => Object.keys(bookingSlots || {}).sort((a, b) => a.localeCompare(b)),
+    [bookingSlots]
+  )
+  const filteredBookings = useMemo(
+    () =>
+      (bookings || []).filter((item) =>
+        bookingFilterDate ? item.date === bookingFilterDate : true
+      ),
+    [bookings, bookingFilterDate]
+  )
+
   return (
     <div className="section-padding">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -404,6 +485,17 @@ function AdminPageContent() {
                 }}
               >
                 Public файлы
+              </button>
+              <button
+                className={`px-4 py-2 rounded-lg font-medium ${activeTab === 'bookings' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700'}`}
+                onClick={async () => {
+                  setActiveTab('bookings')
+                  if (!bookingLoading && bookings.length === 0 && Object.keys(bookingSlots).length === 0) {
+                    await loadBookingsAdmin()
+                  }
+                }}
+              >
+                Записи
               </button>
             </div>
 
@@ -830,7 +922,7 @@ function AdminPageContent() {
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                           value={selectedPost.video || ''}
                           onChange={(e) => updateSelectedPost({ video: e.target.value })}
-                          placeholder="video"
+                          placeholder="video (/videos/... или https://matreshka.tv/video/...)"
                         />
                         <input
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg"
@@ -996,6 +1088,162 @@ function AdminPageContent() {
                     ))}
                   </div>
                 )}
+              </section>
+            )}
+
+            {activeTab === 'bookings' && (
+              <section className="grid lg:grid-cols-2 gap-6">
+                <div className="card p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-xl font-serif font-bold">Свободные слоты</h2>
+                    <button
+                      className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 font-medium"
+                      disabled={bookingLoading || !token.trim()}
+                      onClick={loadBookingsAdmin}
+                    >
+                      Обновить
+                    </button>
+                  </div>
+
+                  <div className="grid sm:grid-cols-3 gap-2">
+                    <input
+                      type="date"
+                      className="px-3 py-2 border border-gray-300 rounded-lg"
+                      value={slotDateInput}
+                      onChange={(e) => setSlotDateInput(e.target.value)}
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="time"
+                        step={300}
+                        className="px-3 py-2 border border-gray-300 rounded-lg"
+                        value={slotStartInput}
+                        onChange={(e) => setSlotStartInput(e.target.value)}
+                        title="Начало"
+                      />
+                      <input
+                        type="time"
+                        step={300}
+                        className="px-3 py-2 border border-gray-300 rounded-lg"
+                        value={slotEndInput}
+                        onChange={(e) => setSlotEndInput(e.target.value)}
+                        title="Окончание"
+                      />
+                    </div>
+                    <button
+                      className="btn-primary"
+                      disabled={bookingLoading || !slotDateInput || !slotStartInput || !slotEndInput}
+                      onClick={() =>
+                        runBookingsAction(
+                          {
+                            action: 'slots.add',
+                            date: slotDateInput,
+                            startTime: slotStartInput,
+                            endTime: slotEndInput,
+                          },
+                          `Слот ${slotDateInput} ${slotStartInput}-${slotEndInput} добавлен`
+                        )
+                      }
+                    >
+                      + Добавить слот
+                    </button>
+                  </div>
+
+                  {bookingError && <p className="text-red-600 text-sm">{bookingError}</p>}
+                  {bookingLoading && <p className="text-sm text-gray-500">Обновление данных...</p>}
+
+                  {bookingDates.length === 0 ? (
+                    <p className="text-sm text-gray-500">Слоты пока не настроены.</p>
+                  ) : (
+                    <div className="space-y-3 max-h-[60vh] overflow-auto pr-1">
+                      {bookingDates.map((date) => (
+                        <div key={date} className="border rounded-lg p-3 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="font-semibold text-gray-900">{date}</p>
+                            <button
+                              className="px-3 py-1 rounded bg-red-100 text-red-700 text-xs font-medium"
+                              onClick={() =>
+                                runBookingsAction(
+                                  { action: 'slots.clearDate', date },
+                                  `Все слоты на ${date} удалены`
+                                )
+                              }
+                            >
+                              Очистить день
+                            </button>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {(bookingSlots[date] || []).map((time) => (
+                              <button
+                                key={`${date}-${time}`}
+                                className="px-2.5 py-1 rounded bg-gray-100 text-gray-700 text-xs hover:bg-red-100 hover:text-red-700"
+                                onClick={() =>
+                                  runBookingsAction(
+                                    { action: 'slots.remove', date, time },
+                                    `Слот ${date} ${time} удален`
+                                  )
+                                }
+                              >
+                                {time} ×
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="card p-5 space-y-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <h2 className="text-xl font-serif font-bold">Записи клиентов</h2>
+                    <input
+                      type="date"
+                      className="px-3 py-2 border border-gray-300 rounded-lg"
+                      value={bookingFilterDate}
+                      onChange={(e) => setBookingFilterDate(e.target.value)}
+                    />
+                  </div>
+
+                  {filteredBookings.length === 0 ? (
+                    <p className="text-sm text-gray-500">
+                      Записей не найдено{bookingFilterDate ? ` на ${bookingFilterDate}` : ''}.
+                    </p>
+                  ) : (
+                    <div className="space-y-3 max-h-[60vh] overflow-auto pr-1">
+                      {filteredBookings.map((item) => (
+                        <div key={item.id} className="border rounded-lg p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="space-y-1">
+                              <p className="font-semibold text-gray-900">
+                                {item.date} {item.time}
+                              </p>
+                              <p className="text-sm text-gray-700">{item.name}</p>
+                              <p className="text-sm text-gray-600">{item.phone}</p>
+                              {item.comment && (
+                                <p className="text-sm text-gray-500 whitespace-pre-wrap">{item.comment}</p>
+                              )}
+                              <p className="text-xs text-gray-400">
+                                Создано: {new Date(item.createdAt).toLocaleString('ru-RU')}
+                              </p>
+                            </div>
+                            <button
+                              className="px-3 py-1 rounded bg-red-100 text-red-700 text-xs font-medium"
+                              onClick={() =>
+                                runBookingsAction(
+                                  { action: 'bookings.delete', bookingId: item.id },
+                                  `Запись ${item.name} удалена`
+                                )
+                              }
+                            >
+                              Удалить
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </section>
             )}
           </div>

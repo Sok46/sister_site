@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useState } from 'react'
 import { usePathname } from 'next/navigation'
+import { BLOG_VISIBLE } from '@/lib/feature-flags'
 
 export default function Navigation() {
   const [isOpen, setIsOpen] = useState(false)
@@ -11,11 +12,13 @@ export default function Navigation() {
   const navItems = [
     { href: '/', label: 'Главная' },
     { href: '/yoga', label: 'Йога' },
-    { href: '/blog', label: 'Блог' },
     { href: '/playlist', label: 'Плейлист' },
     { href: '/gallery', label: 'Галерея' },
     { href: '/merch', label: 'Мерч' },
   ]
+  if (BLOG_VISIBLE) {
+    navItems.splice(2, 0, { href: '/blog', label: 'Блог' })
+  }
 
   const isActiveLink = (href: string) => {
     if (href === '/') {

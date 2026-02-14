@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { BLOG_VISIBLE } from '@/lib/feature-flags'
 
 export default function Footer() {
   return (
@@ -27,11 +28,13 @@ export default function Footer() {
                   Питание
                 </Link>
               </li>
-              <li>
-                <Link href="/blog" className="hover:text-primary-400 transition-colors">
-                  Блог
-                </Link>
-              </li>
+              {BLOG_VISIBLE && (
+                <li>
+                  <Link href="/blog" className="hover:text-primary-400 transition-colors">
+                    Блог
+                  </Link>
+                </li>
+              )}
               <li>
                 <Link href="/gallery" className="hover:text-primary-400 transition-colors">
                   Галерея

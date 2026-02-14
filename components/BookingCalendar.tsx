@@ -66,6 +66,16 @@ function getCalendarDays(month: Date): { date: Date; isCurrentMonth: boolean }[]
 }
 
 function formatSlotLabel(t: string): string {
+  if (t.includes('-')) {
+    const [startRaw, endRaw] = t.split('-')
+    const [sh, sm] = startRaw.split(':').map(Number)
+    const [eh, em] = endRaw.split(':').map(Number)
+    if ([sh, sm, eh, em].some((n) => Number.isNaN(n))) return t
+    const pad = (n: number) => n.toString().padStart(2, '0')
+    return `${pad(sh)}:${pad(sm)}–${pad(eh)}:${pad(em)}`
+  }
+
+  // Обратная совместимость для старого формата одного времени.
   const [hStr, mStr] = t.split(':')
   const h = Number(hStr)
   const m = Number(mStr)
@@ -73,9 +83,7 @@ function formatSlotLabel(t: string): string {
   const start = new Date(2000, 0, 1, h, m)
   const end = new Date(start.getTime() + 60 * 60 * 1000)
   const pad = (n: number) => n.toString().padStart(2, '0')
-  return `${pad(start.getHours())}:${pad(start.getMinutes())}–${pad(
-    end.getHours()
-  )}:${pad(end.getMinutes())}`
+  return `${pad(start.getHours())}:${pad(start.getMinutes())}–${pad(end.getHours())}:${pad(end.getMinutes())}`
 }
 
 function loadScript(src: string): Promise<void> {

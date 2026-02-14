@@ -33,7 +33,23 @@ if not BOT_TOKEN:
     raise ValueError("Задайте переменную окружения TELEGRAM_BOT_TOKEN")
 
 bot = telebot.TeleBot(BOT_TOKEN)
-ADMIN_CHAT_ID = (os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
+def _parse_admin_chat_ids() -> set[str]:
+    many_raw = (os.environ.get("TELEGRAM_ADMIN_CHAT_IDS") or "").strip()
+    single_raw = (os.environ.get("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
+    values: set[str] = set()
+
+    for chunk in [many_raw, single_raw]:
+        if not chunk:
+            continue
+        for item in chunk.split(","):
+            normalized = item.strip()
+            if normalized:
+                values.add(normalized)
+
+    return values
+
+
+ADMIN_CHAT_IDS = _parse_admin_chat_ids()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SLOTS_FILE = BASE_DIR / "content" / "bookings" / "available-slots.json"
@@ -103,9 +119,9 @@ chat_edit_vid_idx: Dict[int, int] = {}     # индекс видео для ре
 
 
 def is_admin_chat(chat_id: int) -> bool:
-    if not ADMIN_CHAT_ID:
+    if not ADMIN_CHAT_IDS:
         return False
-    return str(chat_id) == ADMIN_CHAT_ID
+    return str(chat_id) in ADMIN_CHAT_IDS
 
 
 def ensure_admin(chat_id: int) -> bool:

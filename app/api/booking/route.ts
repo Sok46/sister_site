@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createBooking, formatDateRu } from '@/lib/booking'
+import { getTelegramAdminChatIds } from '@/lib/telegram-admin'
 
 async function sendTelegramNotification(booking: {
   date: string
@@ -9,17 +10,21 @@ async function sendTelegramNotification(booking: {
   comment: string
 }) {
   const token = process.env.TELEGRAM_BOT_TOKEN
-  const chatId = process.env.TELEGRAM_ADMIN_CHAT_ID
-  if (!token || !chatId) return
+  const chatIds = getTelegramAdminChatIds()
+  if (!token || chatIds.length === 0) return
 
   const text = `🆕 Новая запись на йогу!\n\n📅 ${formatDateRu(booking.date)}\n🕐 ${booking.time}\n👤 ${booking.name}\n📱 ${booking.phone}\n💬 ${booking.comment || '—'}`
 
   try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text }),
-    })
+    await Promise.all(
+      chatIds.map((chatId) =>
+        fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text }),
+        })
+      )
+    )
   } catch {
     // ignore
   }
@@ -40,8 +45,8 @@ export async function POST(request: NextRequest) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return NextResponse.json({ error: 'Неверный формат даты' }, { status: 400 })
     }
-    if (!/^\d{1,2}:\d{2}$/.test(time)) {
-      return NextResponse.json({ error: 'Неверный формат времени' }, { status: 400 })
+    if (!/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(time)) {
+      return NextResponse.json({ error: 'Неверный формат времени. Используйте HH:MM-HH:MM' }, { status: 400 })
     }
 
     const booking = createBooking({

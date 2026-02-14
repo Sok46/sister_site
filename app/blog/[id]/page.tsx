@@ -4,8 +4,11 @@ import { isExternalImageUnoptimized } from '@/lib/images'
 import Image from 'next/image'
 import PostRichMedia from '@/components/PostRichMedia'
 import Link from 'next/link'
+import { BLOG_VISIBLE } from '@/lib/feature-flags'
 
 export async function generateStaticParams() {
+  if (!BLOG_VISIBLE) return []
+
   const posts = getAllPosts()
   return posts.map((post) => ({
     id: post.id,
@@ -13,6 +16,10 @@ export async function generateStaticParams() {
 }
 
 export default async function PostPage({ params }: { params: { id: string } }) {
+  if (!BLOG_VISIBLE) {
+    notFound()
+  }
+
   const post = getPostById(params.id)
 
   if (!post) {

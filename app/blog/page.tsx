@@ -1,11 +1,17 @@
 import Link from 'next/link'
 import Image from 'next/image'
+import { notFound } from 'next/navigation'
 import { getAllPosts, type Post } from '@/lib/posts'
 import { isExternalImageUnoptimized } from '@/lib/images'
+import { BLOG_VISIBLE } from '@/lib/feature-flags'
 
 type PostCard = Pick<Post, 'id' | 'title' | 'excerpt' | 'category' | 'date' | 'image' | 'emoji'> & { previewImage?: string }
 
 export default function BlogPage() {
+  if (!BLOG_VISIBLE) {
+    notFound()
+  }
+
   const posts = getAllPosts()
 
   // Если нет постов, показываем примеры

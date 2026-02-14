@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getPayment } from '@/lib/yookassa'
 import { createBooking, formatDateRu } from '@/lib/booking'
+import { getTelegramAdminChatIds } from '@/lib/telegram-admin'
 
 async function sendTelegramNotification(booking: {
   date: string
@@ -10,17 +11,21 @@ async function sendTelegramNotification(booking: {
   comment: string
 }) {
   const token = process.env.TELEGRAM_BOT_TOKEN
-  const chatId = process.env.TELEGRAM_ADMIN_CHAT_ID
-  if (!token || !chatId) return
+  const chatIds = getTelegramAdminChatIds()
+  if (!token || chatIds.length === 0) return
 
   const text = `💰 Новая оплаченная запись!\n\n📅 ${formatDateRu(booking.date)}\n🕐 ${booking.time}\n👤 ${booking.name}\n📱 ${booking.phone}\n💬 ${booking.comment || '—'}`
 
   try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text }),
-    })
+    await Promise.all(
+      chatIds.map((chatId) =>
+        fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text }),
+        })
+      )
+    )
   } catch {
     // ignore
   }

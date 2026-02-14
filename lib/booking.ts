@@ -20,6 +20,40 @@ export interface Booking {
 
 type AvailableSlots = Record<string, string[]>
 
+function parseMinutes(time: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec((time || '').trim())
+  if (!match) return null
+  const h = Number(match[1])
+  const m = Number(match[2])
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null
+  return h * 60 + m
+}
+
+function toTimeString(minutes: number): string {
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
+function normalizeSlotValue(raw: string): string | null {
+  const value = (raw || '').trim()
+  if (!value) return null
+
+  if (value.includes('-')) {
+    const [startRaw, endRaw] = value.split('-')
+    const start = parseMinutes(startRaw)
+    const end = parseMinutes(endRaw)
+    if (start === null || end === null || end <= start) return null
+    return `${toTimeString(start)}-${toTimeString(end)}`
+  }
+
+  // Обратная совместимость: старый формат одного времени.
+  const start = parseMinutes(value)
+  if (start === null) return null
+  if (start + 60 > 24 * 60) return null
+  return `${toTimeString(start)}-${toTimeString(start + 60)}`
+}
+
 function ensureDir() {
   if (!fs.existsSync(BOOKINGS_DIR)) {
     fs.mkdirSync(BOOKINGS_DIR, { recursive: true })
@@ -60,12 +94,19 @@ function writeBookings(bookings: Booking[]) {
 
 export function getAvailableSlotsForDate(date: string): string[] {
   const slots = readSlots()
-  const dateSlots = slots[date] || []
+  const dateSlots = (slots[date] || [])
+    .map((item) => normalizeSlotValue(item))
+    .filter((item): item is string => Boolean(item))
   const bookings = readBookings()
   const bookedTimes = new Set(
-    bookings.filter((b) => b.date === date).map((b) => b.time)
+    bookings
+      .filter((b) => b.date === date)
+      .map((b) => normalizeSlotValue(b.time))
+      .filter((item): item is string => Boolean(item))
   )
-  return dateSlots.filter((t) => !bookedTimes.has(t))
+  return [...new Set(dateSlots)]
+    .filter((t) => !bookedTimes.has(t))
+    .sort((a, b) => a.localeCompare(b))
 }
 
 export function getAllSlots(): AvailableSlots {
@@ -74,7 +115,7 @@ export function getAllSlots(): AvailableSlots {
 
 export function setSlotsForDate(date: string, times: string[]) {
   const slots = readSlots()
-  const validTimes = times.filter((t) => /^\d{1,2}:\d{2}$/.test(t))
+  const validTimes = [...new Set(times.map((t) => normalizeSlotValue(t)).filter((t): t is string => Boolean(t)))]
   if (validTimes.length > 0) {
     slots[date] = validTimes.sort()
   } else {
@@ -87,9 +128,29 @@ export function addSlotsForDate(date: string, times: string[]) {
   const slots = readSlots()
   const existing = new Set(slots[date] || [])
   times.forEach((t) => {
-    if (/^\d{1,2}:\d{2}$/.test(t)) existing.add(t)
+    const normalized = normalizeSlotValue(t)
+    if (normalized) existing.add(normalized)
   })
   slots[date] = [...existing].sort()
+  writeSlots(slots)
+}
+
+export function removeSlotsForDate(date: string, times: string[]) {
+  const slots = readSlots()
+  const existing = new Set(slots[date] || [])
+  times.forEach((t) => existing.delete(t))
+  const next = [...existing].sort()
+  if (next.length > 0) {
+    slots[date] = next
+  } else {
+    delete slots[date]
+  }
+  writeSlots(slots)
+}
+
+export function clearSlotsForDate(date: string) {
+  const slots = readSlots()
+  delete slots[date]
   writeSlots(slots)
 }
 
@@ -101,6 +162,11 @@ export function createBooking(data: {
   comment: string
   paymentId?: string
 }): Booking {
+  const normalizedTime = normalizeSlotValue(data.time)
+  if (!normalizedTime) {
+    throw new Error('Неверный формат времени. Используйте HH:MM-HH:MM')
+  }
+
   const bookings = readBookings()
 
   // Идемпотентность: если запись с таким paymentId уже есть — вернуть её
@@ -110,7 +176,7 @@ export function createBooking(data: {
   }
 
   const slots = getAvailableSlotsForDate(data.date)
-  if (!slots.includes(data.time)) {
+  if (!slots.includes(normalizedTime)) {
     throw new Error('Это время уже занято')
   }
 
@@ -118,6 +184,7 @@ export function createBooking(data: {
   const booking: Booking = {
     id,
     ...data,
+    time: normalizedTime,
     createdAt: new Date().toISOString(),
   }
   bookings.push(booking)
@@ -135,6 +202,14 @@ export function getAllBookings(): Booking[] {
 
 export function getBookingsForDate(date: string): Booking[] {
   return getAllBookings().filter((b) => b.date === date)
+}
+
+export function deleteBookingById(id: string): boolean {
+  const bookings = readBookings()
+  const next = bookings.filter((item) => item.id !== id)
+  if (next.length === bookings.length) return false
+  writeBookings(next)
+  return true
 }
 
 export function formatDateRu(d: string): string {

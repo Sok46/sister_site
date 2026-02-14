@@ -23,8 +23,8 @@ export async function POST(request: NextRequest) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return NextResponse.json({ error: 'Неверный формат даты' }, { status: 400 })
     }
-    if (!/^\d{1,2}:\d{2}$/.test(time)) {
-      return NextResponse.json({ error: 'Неверный формат времени' }, { status: 400 })
+    if (!/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(time)) {
+      return NextResponse.json({ error: 'Неверный формат времени. Используйте HH:MM-HH:MM' }, { status: 400 })
     }
 
     // Проверяем, что слот ещё свободен
