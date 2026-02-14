@@ -562,6 +562,12 @@ function AdminPageContent() {
                               onChange={(e) => updateSelectedVideo(index, { videoUrl: e.target.value })}
                               placeholder="videoUrl (/videos/...)"
                             />
+                            <input
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                              value={video.matreshkaUrl || ''}
+                              onChange={(e) => updateSelectedVideo(index, { matreshkaUrl: e.target.value })}
+                              placeholder="matreshkaUrl (https://matreshka.tv/video/...)"
+                            />
                             <div className="grid grid-cols-2 gap-2">
                               <input
                                 className="w-full px-3 py-2 border border-gray-300 rounded-lg"

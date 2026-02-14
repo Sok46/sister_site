@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import dynamic from 'next/dynamic'
 import type { VideoQuality } from '@/components/VideoPlayer'
 
@@ -16,6 +16,7 @@ interface VideoLesson {
   duration: string
   videoUrl?: string
   qualities?: VideoQualityData[]
+  matreshkaUrl?: string
   rutubeId?: string
   rutubeToken?: string
 }
@@ -73,6 +74,35 @@ function rutubeEmbedUrl(video: VideoLesson): string | null {
   return video.rutubeToken ? `${base}?p=${video.rutubeToken}` : base
 }
 
+function matreshkaEmbedUrl(video: VideoLesson): string | null {
+  const raw = (video.matreshkaUrl || '').trim()
+  if (!raw) return null
+
+  try {
+    const parsed = new URL(raw)
+    const host = parsed.hostname.toLowerCase()
+    if (host !== 'matreshka.tv' && host !== 'www.matreshka.tv') return null
+
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    let videoId = ''
+
+    if (parts[0] === 'video' && parts[1]) {
+      videoId = parts[1]
+    } else if (parts[0] === 'embed' && parts[1] === 'video' && parts[2]) {
+      videoId = parts[2]
+    }
+
+    if (!videoId) return null
+
+    const s = (parsed.searchParams.get('s') || '').trim()
+    return s
+      ? `https://matreshka.tv/embed/video/${videoId}?s=${encodeURIComponent(s)}`
+      : `https://matreshka.tv/embed/video/${videoId}`
+  } catch {
+    return null
+  }
+}
+
 /* ---------- Компонент ---------- */
 export default function YogaPage() {
   const [packages, setPackages] = useState<YogaPackage[]>([])
@@ -80,6 +110,8 @@ export default function YogaPage() {
   const [selectedPackage, setSelectedPackage] = useState<YogaPackage | null>(null)
   const [activeFilter, setActiveFilter] = useState<string>('all')
   const [playingVideo, setPlayingVideo] = useState<VideoLesson | null>(null)
+  const matreshkaContainerRef = useRef<HTMLDivElement | null>(null)
+  const [isMatreshkaFullscreen, setIsMatreshkaFullscreen] = useState(false)
 
   useEffect(() => {
     fetch('/api/yoga/packages')
@@ -87,6 +119,14 @@ export default function YogaPage() {
       .then((data) => setPackages(data.packages || []))
       .catch(() => setPackages([]))
       .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => {
+    function onFullscreenChange() {
+      setIsMatreshkaFullscreen(document.fullscreenElement === matreshkaContainerRef.current)
+    }
+    document.addEventListener('fullscreenchange', onFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
   }, [])
 
   // Уникальные уровни для фильтрации
@@ -110,6 +150,39 @@ export default function YogaPage() {
   }
 
   const isFree = (pkg: YogaPackage) => pkg.price === 0
+  const playingMatreshkaUrl = playingVideo ? matreshkaEmbedUrl(playingVideo) : null
+  const playingRutubeUrl = playingVideo ? rutubeEmbedUrl(playingVideo) : null
+
+  function hasPlayableSource(video: VideoLesson): boolean {
+    return !!(video.videoUrl || matreshkaEmbedUrl(video) || rutubeEmbedUrl(video))
+  }
+
+  function playNextLesson() {
+    if (!selectedPackage || !playingVideo) return
+    const videos = selectedPackage.videos
+    if (videos.length === 0) return
+
+    const currentIndex = videos.indexOf(playingVideo)
+    if (currentIndex < 0) return
+
+    for (let step = 1; step <= videos.length; step += 1) {
+      const idx = (currentIndex + step) % videos.length
+      const candidate = videos[idx]
+      if (hasPlayableSource(candidate)) {
+        setPlayingVideo(candidate)
+        return
+      }
+    }
+  }
+
+  async function toggleMatreshkaFullscreen() {
+    if (!matreshkaContainerRef.current) return
+    if (document.fullscreenElement === matreshkaContainerRef.current) {
+      await document.exitFullscreen()
+      return
+    }
+    await matreshkaContainerRef.current.requestFullscreen()
+  }
 
   return (
     <div className="min-h-screen">
@@ -331,18 +404,20 @@ export default function YogaPage() {
               </p>
 
               {/* Встроенный видеоплеер */}
-              {playingVideo && (playingVideo.videoUrl || rutubeEmbedUrl(playingVideo)) && (
+              {playingVideo && (playingVideo.videoUrl || playingMatreshkaUrl || playingRutubeUrl) && (
                 <div className="mb-6">
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-base font-semibold text-gray-900">
                       {playingVideo.title}
                     </h3>
-                    <button
-                      onClick={() => setPlayingVideo(null)}
-                      className="text-xs text-gray-500 hover:text-gray-700 underline"
-                    >
-                      Свернуть
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => setPlayingVideo(null)}
+                        className="text-xs text-gray-500 hover:text-gray-700 underline"
+                      >
+                        Свернуть
+                      </button>
+                    </div>
                   </div>
 
                   {playingVideo.videoUrl ? (
@@ -353,11 +428,41 @@ export default function YogaPage() {
                       qualities={playingVideo.qualities as VideoQuality[] | undefined}
                       storageKey={`${selectedPackage.id}-${selectedPackage.videos.indexOf(playingVideo)}`}
                     />
+                  ) : playingMatreshkaUrl ? (
+                    <div
+                      ref={matreshkaContainerRef}
+                      className="relative w-full rounded-xl overflow-hidden bg-black"
+                      style={{ paddingTop: '56.25%' }}
+                    >
+                      <iframe
+                        src={playingMatreshkaUrl}
+                        className="absolute inset-0 w-full h-full"
+                        frameBorder="0"
+                        allow="autoplay; encrypted-media; picture-in-picture; clipboard-write"
+                      />
+                      <button
+                        type="button"
+                        onClick={playNextLesson}
+                        className="absolute -bottom-1 right-14 h-[52px] w-10 rounded-md bg-white text-black pointer-events-auto flex items-center justify-center text-sm"
+                        aria-label="Следующее занятие"
+                        title="Следующее занятие"
+                      >
+                        ⏭️
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void toggleMatreshkaFullscreen()}
+                        className="absolute bottom-3 right-2 h-7 w-10 rounded-md bg-transparent text-transparent border-0 p-0 m-0"
+                        aria-label={isMatreshkaFullscreen ? 'Выйти из полного экрана' : 'Открыть на весь экран'}
+                      >
+                        
+                      </button>
+                    </div>
                   ) : (
                     /* Рутуб iframe */
                     <div className="relative w-full rounded-xl overflow-hidden bg-black" style={{ paddingTop: '56.25%' }}>
                       <iframe
-                        src={rutubeEmbedUrl(playingVideo)!}
+                        src={playingRutubeUrl!}
                         className="absolute inset-0 w-full h-full"
                         frameBorder="0"
                         allow="clipboard-write; autoplay"
@@ -374,7 +479,7 @@ export default function YogaPage() {
               </h3>
               <div className="space-y-2 mb-8">
                 {selectedPackage.videos.map((video, i) => {
-                  const hasVideo = !!(video.videoUrl || video.rutubeId)
+                  const hasVideo = !!(video.videoUrl || matreshkaEmbedUrl(video) || video.rutubeId)
                   const isPlaying = playingVideo === video
 
                   return (

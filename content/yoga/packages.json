@@ -8,7 +8,16 @@
       {
         "title": "Йога для всех — вводное занятие",
         "duration": "25 мин",
-        "videoUrl": "/videos/1771011209364-IMG_4434-web.mp4"
+        "videoUrl": "",
+        "rutubeId": "",
+        "rutubeToken": "",
+        "matreshkaUrl": "https://matreshka.tv/video/qgAAuEmQcgM?s=aa"
+      },
+      {
+        "title": "Йога для всех — вводное занятие рутуб",
+        "duration": "25 мин",
+        "rutubeId": "d60cb6e26223204026c8f9c4f3a818af",
+        "rutubeToken": "S0853tqYfnibwNJIRU_Dbg"
       }
     ],
     "price": 0,

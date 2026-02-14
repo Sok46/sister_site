@@ -13,6 +13,8 @@ export interface VideoLesson {
   videoUrl?: string
   /** Варианты качества видео (если указаны — появится переключатель) */
   qualities?: VideoQuality[]
+  /** Полная ссылка на видео в MatreshkaTV (например https://matreshka.tv/video/<id>?s=...) */
+  matreshkaUrl?: string
   /** ID видео на Рутубе (из URL: rutube.ru/video/private/{rutubeId}/) */
   rutubeId?: string
   /** Токен для приватного видео Рутуба (параметр ?p=...) */
