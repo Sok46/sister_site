@@ -1,16 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { mkdir } from 'fs/promises'
+import { mkdir, writeFile } from 'fs/promises'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import path from 'path'
-import { requireAdminToken } from '@/lib/admin-auth'
-import { createWriteStream } from 'fs'
-import { Readable } from 'stream'
-import { pipeline } from 'stream/promises'
+import { requireAdminTokenValue } from '@/lib/admin-auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 const ALLOWED_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm'])
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024 // 1 GB
+const execFileAsync = promisify(execFile)
+
+function normalizeToken(value: string | null): string {
+  return (value || '').trim()
+}
+
+function getRequestToken(request: NextRequest, formToken?: string): string {
+  const headerToken = normalizeToken(request.headers.get('x-upload-token'))
+  if (headerToken) return headerToken
+
+  const auth = normalizeToken(request.headers.get('authorization'))
+  if (auth.toLowerCase().startsWith('bearer ')) {
+    return auth.slice(7).trim()
+  }
+
+  return normalizeToken(formToken || '')
+}
 
 function sanitizeBasename(input: string): string {
   const base = input
@@ -23,19 +39,50 @@ function sanitizeBasename(input: string): string {
   return base || `video-${Date.now()}`
 }
 
-async function writeWebFileToDisk(file: File, destinationPath: string): Promise<void> {
-  const webStream = file.stream()
-  const nodeReadable = Readable.fromWeb(webStream as any)
-  const nodeWritable = createWriteStream(destinationPath, { flags: 'w' })
-  await pipeline(nodeReadable, nodeWritable)
+async function tryTranscodeToWebMp4(
+  inputPath: string,
+  outputPath: string
+): Promise<{ ok: boolean; warning?: string }> {
+  try {
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-i',
+      inputPath,
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '23',
+      '-movflags',
+      '+faststart',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '128k',
+      outputPath,
+    ])
+    return { ok: true }
+  } catch {
+    return {
+      ok: false,
+      warning:
+        'Не удалось автоматически конвертировать в web-mp4. Используется исходный файл (проверьте ffmpeg на сервере).',
+    }
+  }
 }
 
 export async function POST(request: NextRequest) {
-  const denied = requireAdminToken(request)
-  if (denied) return denied
-
   try {
     const formData = await request.formData()
+    const requestToken = getRequestToken(
+      request,
+      String(formData.get('token') || '')
+    )
+    const denied = requireAdminTokenValue(requestToken)
+    if (denied) return denied
 
     const file = formData.get('file')
     if (!(file instanceof File)) {
@@ -70,15 +117,25 @@ export async function POST(request: NextRequest) {
     const filename = `${base}-${timestamp}${ext}`
     const targetPath = path.join(videosDir, filename)
 
-    await writeWebFileToDisk(file, targetPath)
-    const finalFileName = filename
-    const finalUrl = `/videos/${filename}`
+    const bytes = Buffer.from(await file.arrayBuffer())
+    await writeFile(targetPath, bytes)
+
+    const webFilename = `${base}-${timestamp}-web.mp4`
+    const webTargetPath = path.join(videosDir, webFilename)
+    const transcode = await tryTranscodeToWebMp4(targetPath, webTargetPath)
+
+    const finalFileName = transcode.ok ? webFilename : filename
+    const finalUrl = `/videos/${finalFileName}`
 
     return NextResponse.json({
       success: true,
       fileName: finalFileName,
       url: finalUrl,
       size: file.size,
+      sourceFileName: filename,
+      sourceUrl: `/videos/${filename}`,
+      transcoded: transcode.ok,
+      warning: transcode.warning || null,
     })
   } catch (error) {
     const message =

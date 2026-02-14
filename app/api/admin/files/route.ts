@@ -1,7 +1,7 @@
 import path from 'path'
-import { promises as fs, createWriteStream } from 'fs'
-import { Readable } from 'stream'
-import { pipeline } from 'stream/promises'
+import { promises as fs } from 'fs'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import { NextRequest, NextResponse } from 'next/server'
 import { requireAdminToken } from '@/lib/admin-auth'
 
@@ -17,27 +17,13 @@ interface FileEntry {
   publicUrl: string | null
 }
 
-type UploadJobStatus = 'processing' | 'done' | 'failed'
-interface UploadJob {
-  id: string
-  status: UploadJobStatus
-  progress: number
-  message: string
-  updatedAt: number
-}
-
-const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.ogv'])
-const PHOTO_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif'])
-const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.ogg'])
-const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024 // 1 GB
-const uploadJobs = new Map<string, UploadJob>()
-const JOB_TTL_MS = 30 * 60 * 1000
-
 function normalizeRelative(input: string): string {
-  return (input || '')
+  const cleaned = (input || '')
     .replace(/\\/g, '/')
     .replace(/^\/+/, '')
     .replace(/\.\.+/g, '')
+
+  return cleaned
 }
 
 function sanitizeFileName(input: string): string {
@@ -49,7 +35,8 @@ function sanitizeFileName(input: string): string {
 }
 
 function extensionOf(fileName: string): string {
-  return path.extname(fileName || '').toLowerCase()
+  const ext = path.extname(fileName || '').toLowerCase()
+  return ext
 }
 
 function uploadKindByPath(relativePath: string): 'video' | 'photo' | 'audio' | null {
@@ -60,48 +47,50 @@ function uploadKindByPath(relativePath: string): 'video' | 'photo' | 'audio' | n
   return null
 }
 
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.ogv'])
+const PHOTO_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif'])
+const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.ogg'])
+const execFileAsync = promisify(execFile)
+
 function isAllowedExtension(kind: 'video' | 'photo' | 'audio', ext: string): boolean {
   if (kind === 'video') return VIDEO_EXTENSIONS.has(ext)
   if (kind === 'photo') return PHOTO_EXTENSIONS.has(ext)
   return AUDIO_EXTENSIONS.has(ext)
 }
 
-function nowMs(): number {
-  return Date.now()
-}
-
-function cleanupOldJobs() {
-  const threshold = nowMs() - JOB_TTL_MS
-  for (const [id, job] of uploadJobs.entries()) {
-    if (job.updatedAt < threshold) uploadJobs.delete(id)
+async function tryTranscodeToWebMp4(
+  inputPath: string,
+  outputPath: string
+): Promise<{ ok: boolean; warning?: string }> {
+  try {
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-i',
+      inputPath,
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '25',
+      '-movflags',
+      '+faststart',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '128k',
+      outputPath,
+    ])
+    return { ok: true }
+  } catch {
+    return {
+      ok: false,
+      warning:
+        'Не удалось автоматически перекодировать видео в web-mp4. Используется исходный файл (проверьте ffmpeg на сервере).',
+    }
   }
-}
-
-function normalizeJobId(input: string | null): string {
-  const value = (input || '').trim()
-  return /^[a-zA-Z0-9_-]{8,128}$/.test(value) ? value : ''
-}
-
-function setJob(
-  id: string,
-  patch: Partial<Pick<UploadJob, 'status' | 'progress' | 'message'>>
-) {
-  if (!id) return
-  const prev = uploadJobs.get(id)
-  uploadJobs.set(id, {
-    id,
-    status: patch.status || prev?.status || 'processing',
-    progress: Math.max(0, Math.min(100, patch.progress ?? prev?.progress ?? 0)),
-    message: patch.message || prev?.message || '',
-    updatedAt: nowMs(),
-  })
-}
-
-async function writeWebFileToDisk(file: File, destinationPath: string): Promise<void> {
-  const webStream = file.stream()
-  const nodeReadable = Readable.fromWeb(webStream as any)
-  const nodeWritable = createWriteStream(destinationPath, { flags: 'w' })
-  await pipeline(nodeReadable, nodeWritable)
 }
 
 function getSafePath(publicRoot: string, relativePath: string): string {
@@ -118,21 +107,6 @@ export async function GET(request: NextRequest) {
   if (denied) return denied
 
   try {
-    cleanupOldJobs()
-    const progressId = normalizeJobId(request.nextUrl.searchParams.get('progressId'))
-    if (progressId) {
-      const job = uploadJobs.get(progressId)
-      if (!job) {
-        return NextResponse.json({ error: 'Прогресс не найден' }, { status: 404 })
-      }
-      return NextResponse.json({
-        id: job.id,
-        status: job.status,
-        progress: job.progress,
-        message: job.message,
-      })
-    }
-
     const publicRoot = path.join(process.cwd(), 'public')
     const requestedRaw = request.nextUrl.searchParams.get('path') || ''
     const requested = normalizeRelative(requestedRaw)
@@ -187,14 +161,11 @@ export async function POST(request: NextRequest) {
   if (denied) return denied
 
   try {
-    cleanupOldJobs()
     const publicRoot = path.join(process.cwd(), 'public')
     const requestedRaw = request.nextUrl.searchParams.get('path') || ''
-    const uploadId = normalizeJobId(request.nextUrl.searchParams.get('uploadId'))
     const requested = normalizeRelative(requestedRaw)
     const targetDir = getSafePath(publicRoot, requested)
     const kind = uploadKindByPath(requested)
-    setJob(uploadId, { status: 'processing', progress: 1, message: 'Запрос получен' })
 
     if (!kind) {
       return NextResponse.json(
@@ -216,12 +187,6 @@ export async function POST(request: NextRequest) {
     if (file.size <= 0) {
       return NextResponse.json({ error: 'Файл пустой' }, { status: 400 })
     }
-    if (file.size > MAX_UPLOAD_BYTES) {
-      return NextResponse.json(
-        { error: 'Файл слишком большой. Максимум 1 ГБ.' },
-        { status: 400 }
-      )
-    }
 
     const originalName = sanitizeFileName(file.name || 'file')
     const ext = extensionOf(originalName)
@@ -234,23 +199,49 @@ export async function POST(request: NextRequest) {
 
     const sourceName = `${Date.now()}-${originalName}`
     const sourcePath = path.join(targetDir, sourceName)
-    await writeWebFileToDisk(file, sourcePath)
-    setJob(uploadId, { progress: 8, message: 'Файл сохранен на сервере' })
+    const bytes = Buffer.from(await file.arrayBuffer())
+    await fs.writeFile(sourcePath, bytes)
 
-    const stat = await fs.stat(sourcePath)
-    const relativePath = normalizeRelative(path.relative(publicRoot, sourcePath))
-    setJob(uploadId, { status: 'done', progress: 100, message: 'Готово' })
+    let finalName = sourceName
+    let finalPath = sourcePath
+    let warning: string | undefined
+    let sourcePublicUrl: string | null = null
+    let transcoded = false
+
+    if (kind === 'video') {
+      const baseName = sourceName.replace(/\.[^/.]+$/, '')
+      const webName = `${baseName}-web.mp4`
+      const webPath = path.join(targetDir, webName)
+      const transcode = await tryTranscodeToWebMp4(sourcePath, webPath)
+      if (transcode.ok) {
+        finalName = webName
+        finalPath = webPath
+        try {
+          await fs.unlink(sourcePath)
+        } catch {
+          // Если не удалось удалить исходник, просто отдадим ссылку на него.
+          sourcePublicUrl = `/${normalizeRelative(path.relative(publicRoot, sourcePath))}`
+        }
+        transcoded = true
+      } else {
+        warning = transcode.warning
+      }
+    }
+
+    const finalStat = await fs.stat(finalPath)
+    const relativePath = normalizeRelative(path.relative(publicRoot, finalPath))
     return NextResponse.json({
       success: true,
       relativePath,
       publicUrl: `/${relativePath}`,
-      fileName: sourceName,
-      size: stat.size,
-      uploadId: uploadId || null,
+      fileName: finalName,
+      size: finalStat.size,
+      sourceFileName: sourceName,
+      sourcePublicUrl,
+      transcoded,
+      warning: warning || null,
     })
   } catch (error) {
-    const failedUploadId = normalizeJobId(request.nextUrl.searchParams.get('uploadId'))
-    setJob(failedUploadId, { status: 'failed', progress: 100, message: 'Ошибка обработки' })
     const message = error instanceof Error ? error.message : 'Ошибка загрузки файла'
     return NextResponse.json({ error: message }, { status: 400 })
   }

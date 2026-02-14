@@ -7,11 +7,13 @@ Telegram-бот для получения уведомлений о запися
 import json
 import os
 import re
-import subprocess
-import threading
+import hmac
 import hashlib
 import secrets
-from datetime import date, datetime, timedelta
+import sqlite3
+import subprocess
+import threading
+from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Literal, Optional
 
@@ -42,8 +44,11 @@ PUBLIC_DIR = BASE_DIR / "public"
 PACKAGES_FILE = BASE_DIR / "content" / "yoga" / "packages.json"
 VIDEOS_DIR = BASE_DIR / "public" / "videos"
 PAGE_SIZE_PKGS = 5
-ADMIN_ACCESS_TOKEN_FILE = BASE_DIR / "content" / "admin" / "access-token.json"
-ADMIN_ACCESS_TOKEN_TTL_HOURS = 4
+ADMIN_TOKEN_DB_PATH = Path(
+    (os.environ.get("ADMIN_TOKEN_DB_PATH") or str(BASE_DIR / "data" / "admin-auth.sqlite")).strip()
+)
+ADMIN_TOKEN_HASH_SECRET = (os.environ.get("ADMIN_TOKEN_HASH_SECRET") or "").strip()
+ADMIN_TOKEN_TTL_SECONDS = 4 * 60 * 60
 
 # Простое состояние диалога по chat_id:
 #   None                 — обычный режим
@@ -108,6 +113,62 @@ def ensure_admin(chat_id: int) -> bool:
         return True
     bot.send_message(chat_id, "⛔ Эта команда доступна только администратору.")
     return False
+
+
+def _open_admin_token_db() -> sqlite3.Connection:
+    ADMIN_TOKEN_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(ADMIN_TOKEN_DB_PATH)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS admin_auth_token (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            token_hash TEXT NOT NULL,
+            issued_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            created_by TEXT
+        );
+        """
+    )
+    conn.commit()
+    return conn
+
+
+def _hash_admin_token(raw_token: str) -> str:
+    return hmac.new(
+        ADMIN_TOKEN_HASH_SECRET.encode("utf-8"),
+        raw_token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def issue_admin_token(chat_id: int) -> tuple[str, int]:
+    if not ADMIN_TOKEN_HASH_SECRET:
+        raise RuntimeError("Не задан ADMIN_TOKEN_HASH_SECRET в .env")
+
+    raw_token = secrets.token_urlsafe(32)
+    issued_at = int(datetime.now().timestamp())
+    expires_at = issued_at + ADMIN_TOKEN_TTL_SECONDS
+    token_hash = _hash_admin_token(raw_token)
+
+    conn = _open_admin_token_db()
+    try:
+        conn.execute(
+            """
+            INSERT INTO admin_auth_token (id, token_hash, issued_at, expires_at, created_by)
+            VALUES (1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                token_hash = excluded.token_hash,
+                issued_at = excluded.issued_at,
+                expires_at = excluded.expires_at,
+                created_by = excluded.created_by
+            """,
+            (token_hash, issued_at, expires_at, str(chat_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return raw_token, expires_at
 
 
 def _trim_output(text: str, max_chars: int = 3000) -> str:
@@ -283,6 +344,14 @@ def make_main_keyboard() -> types.ReplyKeyboardMarkup:
     return kb
 
 
+def make_system_keyboard() -> types.ReplyKeyboardMarkup:
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row(types.KeyboardButton("Деплой"))
+    kb.row(types.KeyboardButton("Получить токен"))
+    kb.row(types.KeyboardButton("⬅️ В главное меню"))
+    return kb
+
+
 def make_schedule_keyboard() -> types.ReplyKeyboardMarkup:
     """
     Меню управления расписанием.
@@ -328,33 +397,6 @@ def make_blog_keyboard() -> types.ReplyKeyboardMarkup:
     kb.row(types.KeyboardButton("Управление файлами"))
     kb.row(types.KeyboardButton("⬅️ В главное меню"))
     return kb
-
-
-def make_system_keyboard() -> types.ReplyKeyboardMarkup:
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(types.KeyboardButton("Деплой"))
-    kb.row(types.KeyboardButton("Сформировать токен"))
-    kb.row(types.KeyboardButton("⬅️ В главное меню"))
-    return kb
-
-
-def generate_site_admin_token() -> tuple[str, str]:
-    token = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    now = datetime.utcnow()
-    expires_at = now + timedelta(hours=ADMIN_ACCESS_TOKEN_TTL_HOURS)
-
-    ADMIN_ACCESS_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "tokenHash": token_hash,
-        "createdAt": now.isoformat() + "Z",
-        "expiresAt": expires_at.isoformat() + "Z",
-        "source": "telegram-bot",
-    }
-    with open(ADMIN_ACCESS_TOKEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-    return token, payload["expiresAt"]
 
 
 def create_blog_post_file(markdown_text: str) -> str:
@@ -748,7 +790,7 @@ def cmd_start(message):
         "• «Управление расписанием» — слоты, записи, отмены\n"
         "• «Управление блогом» — работа с постами\n"
         "• «Управление уроками» — пакеты видеоуроков йоги\n"
-        "• «Системные функции» — деплой и временный токен для админки сайта\n\n"
+        "• «Системные функции» — деплой и выдача админ-токена\n\n"
         "Технически слоты хранятся в available-slots.json, записи — в bookings.json,\n"
         "пакеты уроков — в content/yoga/packages.json."
     )
@@ -802,28 +844,37 @@ def cmd_deploy(message):
     threading.Thread(target=run_site_rebuild, args=(chat_id,), daemon=True).start()
 
 
-@bot.message_handler(func=lambda m: m.text in ["Деплой", "Сформировать токен"])
+@bot.message_handler(func=lambda m: m.text in ["Деплой", "Получить токен"])
 def handle_system_actions(message):
     chat_id = message.chat.id
+    text = (message.text or "").strip()
     if not ensure_admin(chat_id):
         return
 
-    text = (message.text or "").strip()
     if text == "Деплой":
         threading.Thread(target=run_site_rebuild, args=(chat_id,), daemon=True).start()
         return
 
-    if text == "Сформировать токен":
-        token, expires_at = generate_site_admin_token()
-        bot.send_message(
-            chat_id,
-            "🔐 Новый токен для админки сайта сформирован.\n\n"
-            f"`{token}`\n\n"
-            f"Срок действия: {ADMIN_ACCESS_TOKEN_TTL_HOURS} часа(ов), до `{expires_at}` UTC.\n"
-            "Если сформировать токен снова — старый сразу перестанет работать.",
-            parse_mode="Markdown",
-        )
-        return
+    if text == "Получить токен":
+        try:
+            raw_token, expires_at = issue_admin_token(chat_id)
+            expires_at_human = datetime.fromtimestamp(expires_at).strftime("%d.%m.%Y %H:%M:%S")
+            bot.send_message(
+                chat_id,
+                "🔐 Выдан новый токен администратора.\n\n"
+                f"`{raw_token}`\n\n"
+                "Срок действия: 4 часа.\n"
+                f"Истекает: {expires_at_human}\n\n"
+                "⚠️ Важно: действует только последний выданный токен.",
+                parse_mode="Markdown",
+                reply_markup=make_system_keyboard(),
+            )
+        except Exception as e:
+            bot.send_message(
+                chat_id,
+                f"❌ Не удалось выдать токен: {e}",
+                reply_markup=make_system_keyboard(),
+            )
 
 
 def parse_date_time(text: str):
@@ -1131,12 +1182,12 @@ def handle_main_menus(message):
         return
 
     if text == "Системные функции":
+        if not ensure_admin(chat_id):
+            return
         chat_state[chat_id] = None
         bot.send_message(
             chat_id,
-            "Раздел «Системные функции».\n\n"
-            "• «Деплой» — sync контента, сборка и перезапуск сайта\n"
-            "• «Сформировать токен» — создать временный токен для входа в админку сайта (4 часа).",
+            "Раздел «Системные функции». Выберите действие:",
             reply_markup=make_system_keyboard(),
         )
         return

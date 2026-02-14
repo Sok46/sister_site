@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import type { PlaylistItem } from '@/lib/playlist'
 import type { Post } from '@/lib/posts'
 import type { VideoLesson, YogaPackage } from '@/lib/yoga'
@@ -41,6 +42,7 @@ function isVideoFilePath(filePath: string): boolean {
 }
 
 export default function AdminPage() {
+  const searchParams = useSearchParams()
   const [token, setToken] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -55,12 +57,7 @@ export default function AdminPage() {
   const [fileToUpload, setFileToUpload] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
-  const [uploadStage, setUploadStage] = useState<'idle' | 'sending' | 'processing'>('idle')
-  const [serverProgress, setServerProgress] = useState(0)
-  const [serverProgressMessage, setServerProgressMessage] = useState('')
   const [autoBooted, setAutoBooted] = useState(false)
-  const [initialTabParam, setInitialTabParam] = useState<string>('')
-  const [initialPathParam, setInitialPathParam] = useState<string>('')
 
   const [selectedYogaId, setSelectedYogaId] = useState<string | null>(null)
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null)
@@ -175,33 +172,19 @@ export default function AdminPage() {
     setPublicError('')
     setUploading(true)
     setUploadProgress(0)
-    setUploadStage('sending')
-    setServerProgress(0)
-    setServerProgressMessage('Сохранение файла на сервере')
-    const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     try {
       const formData = new FormData()
       formData.append('file', fileToUpload)
 
       const payload = await new Promise<Record<string, unknown>>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
-        xhr.open(
-          'POST',
-          `/api/admin/files?path=${encodeURIComponent(currentPublicPath)}&uploadId=${encodeURIComponent(uploadId)}`
-        )
+        xhr.open('POST', `/api/admin/files?path=${encodeURIComponent(currentPublicPath)}`)
         xhr.setRequestHeader('x-admin-token', token.trim())
 
         xhr.upload.onprogress = (event) => {
           if (!event.lengthComputable) return
           const percent = Math.round((event.loaded / event.total) * 100)
-          // До ответа сервера держим максимум 95%, чтобы не создавать ложное "готово".
-          setUploadProgress(Math.min(percent, 95))
-        }
-
-        xhr.upload.onload = () => {
-          setUploadStage('processing')
-          setUploadProgress(96)
-          setServerProgress(60)
+          setUploadProgress(percent)
         }
 
         xhr.onerror = () => {
@@ -209,34 +192,11 @@ export default function AdminPage() {
         }
 
         xhr.onload = () => {
-          const contentType = (xhr.getResponseHeader('content-type') || '').toLowerCase()
           let parsed: Record<string, unknown> = {}
-
-          if (contentType.includes('application/json')) {
-            try {
-              parsed = JSON.parse(xhr.responseText || '{}') as Record<string, unknown>
-            } catch {
-              reject(new Error('Сервер вернул поврежденный JSON-ответ'))
-              return
-            }
-          } else {
-            const text = (xhr.responseText || '').trim()
-            const shortText = text ? text.slice(0, 180) : ''
-            if (xhr.status === 413) {
-              reject(
-                new Error(
-                  'Сервер отклонил файл: слишком большой размер запроса (HTTP 413). Увеличьте client_max_body_size в Nginx.'
-                )
-              )
-              return
-            }
-            reject(
-              new Error(
-                `Некорректный ответ сервера (HTTP ${xhr.status}). ${
-                  shortText || 'Проверьте логи Nginx/PM2.'
-                }`
-              )
-            )
+          try {
+            parsed = JSON.parse(xhr.responseText || '{}') as Record<string, unknown>
+          } catch {
+            reject(new Error('Некорректный ответ сервера'))
             return
           }
 
@@ -249,27 +209,22 @@ export default function AdminPage() {
 
         xhr.send(formData)
       })
-
       const messageParts = [`Файл загружен: ${payload.fileName}`]
+      if (payload.transcoded) {
+        messageParts.push('Видео перекодировано в web-mp4')
+      }
       if (payload.warning) {
         messageParts.push(String(payload.warning))
       }
       setSaved(messageParts.join('. '))
       setFileToUpload(null)
       setUploadProgress(100)
-      setServerProgress(100)
-      setServerProgressMessage('Готово')
       await loadPublicFiles(currentPublicPath)
     } catch (err) {
       setPublicError(err instanceof Error ? err.message : 'Ошибка загрузки')
     } finally {
       setUploading(false)
-      setTimeout(() => {
-        setUploadProgress(0)
-        setServerProgress(0)
-        setServerProgressMessage('')
-        setUploadStage('idle')
-      }, 800)
+      setTimeout(() => setUploadProgress(0), 600)
     }
   }
 
@@ -323,18 +278,7 @@ export default function AdminPage() {
   }, [uploadKind])
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const tab = (params.get('tab') || '').trim()
-    const path = (params.get('path') || '').trim()
-    setInitialTabParam(tab)
-    setInitialPathParam(path)
-    if (tab === 'files') {
-      setActiveTab('files')
-    }
-  }, [])
-
-  useEffect(() => {
-    const savedToken = localStorage.getItem('admin-token') || ''
+    const savedToken = sessionStorage.getItem('admin-token') || ''
     if (savedToken) {
       setToken(savedToken)
     }
@@ -343,21 +287,26 @@ export default function AdminPage() {
   useEffect(() => {
     const value = token.trim()
     if (value) {
-      localStorage.setItem('admin-token', value)
+      sessionStorage.setItem('admin-token', value)
     } else {
-      localStorage.removeItem('admin-token')
+      sessionStorage.removeItem('admin-token')
     }
   }, [token])
 
   useEffect(() => {
+    const tab = searchParams.get('tab')
+    const path = searchParams.get('path') || ''
+    if (tab === 'files') {
+      setActiveTab('files')
+    }
     if (autoBooted || !token.trim()) return
 
     setAutoBooted(true)
     void loadSnapshot()
-    if (initialTabParam === 'files') {
-      void loadPublicFiles(initialPathParam)
+    if (tab === 'files') {
+      void loadPublicFiles(path)
     }
-  }, [token, autoBooted, initialTabParam, initialPathParam])
+  }, [searchParams, token, autoBooted])
 
   function updateSelectedYoga(patch: Partial<YogaPackage>) {
     if (!data || !selectedYoga) return
@@ -413,7 +362,7 @@ export default function AdminPage() {
               type="password"
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder="ADMIN_UPLOAD_TOKEN"
+              placeholder="Токен из Telegram-бота"
               className="flex-1 px-4 py-2 border border-gray-300 rounded-lg"
             />
             <button className="btn-primary" onClick={loadSnapshot} disabled={loading || !token.trim()}>
@@ -952,20 +901,7 @@ export default function AdminPage() {
                               />
                             </div>
                             <p className="text-xs text-gray-600 mt-1">
-                              {uploadStage === 'sending'
-                                ? `Отправка файла: ${uploadProgress}%`
-                                : uploadStage === 'processing'
-                                ? `Файл получен. Обработка на сервере... ${uploadProgress}%`
-                                : `Загрузка: ${uploadProgress}%`}
-                            </p>
-                            <div className="h-2 rounded bg-gray-200 overflow-hidden mt-2">
-                              <div
-                                className="h-full bg-emerald-500 transition-all duration-150"
-                                style={{ width: `${serverProgress}%` }}
-                              />
-                            </div>
-                            <p className="text-xs text-gray-600 mt-1">
-                              Сервер: {serverProgress}%{serverProgressMessage ? ` · ${serverProgressMessage}` : ''}
+                              Загрузка: {uploadProgress}%
                             </p>
                           </div>
                         )}

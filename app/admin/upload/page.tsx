@@ -6,6 +6,10 @@ type UploadResult = {
   url: string
   fileName: string
   size: number
+  sourceUrl?: string
+  sourceFileName?: string
+  transcoded?: boolean
+  warning?: string | null
 }
 
 function formatBytes(bytes: number): string {
@@ -39,13 +43,11 @@ export default function AdminUploadPage() {
     setLoading(true)
     try {
       const formData = new FormData()
+      formData.append('token', token.trim())
       formData.append('file', file)
 
       const res = await fetch('/api/admin/upload-video', {
         method: 'POST',
-        headers: {
-          'x-admin-token': token.trim(),
-        },
         body: formData,
       })
       const data = await res.json()
@@ -58,6 +60,10 @@ export default function AdminUploadPage() {
         url: data.url,
         fileName: data.fileName,
         size: data.size,
+        sourceUrl: data.sourceUrl,
+        sourceFileName: data.sourceFileName,
+        transcoded: Boolean(data.transcoded),
+        warning: data.warning || null,
       })
       setFile(null)
     } catch (err) {
@@ -75,7 +81,7 @@ export default function AdminUploadPage() {
         </h1>
         <p className="text-gray-600 mb-8">
           Загрузите файл в папку <code className="bg-gray-100 px-2 py-1 rounded">public/videos</code>, затем используйте
-          путь в постах и уроках. Файл сохраняется в оригинальном виде без автоматической перекодировки.
+          путь в постах и уроках. После загрузки сервер попробует автоматически сделать web-версию в mp4 через ffmpeg.
         </p>
 
         <form onSubmit={onSubmit} className="card p-6 space-y-5">
@@ -88,7 +94,7 @@ export default function AdminUploadPage() {
               value={token}
               onChange={(e) => setToken(e.target.value)}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-              placeholder="ADMIN_UPLOAD_TOKEN"
+              placeholder="Токен из Telegram-бота"
               autoComplete="off"
             />
           </div>
@@ -128,10 +134,28 @@ export default function AdminUploadPage() {
             </h2>
             <p className="text-sm text-gray-600 mb-2">Файл: {result.fileName}</p>
             <p className="text-sm text-gray-600 mb-4">Размер: {formatBytes(result.size)}</p>
-            <p className="text-sm text-gray-700 mb-3">
-              Путь для сайта:{' '}
-              <code className="bg-gray-100 px-2 py-1 rounded">{result.url}</code>
-            </p>
+            {result.transcoded ? (
+              <p className="text-sm text-gray-700 mb-3">
+                Web-версия создана:{' '}
+                <code className="bg-gray-100 px-2 py-1 rounded">{result.url}</code>
+              </p>
+            ) : (
+              <p className="text-sm text-gray-700 mb-3">
+                Путь для сайта:{' '}
+                <code className="bg-gray-100 px-2 py-1 rounded">{result.url}</code>
+              </p>
+            )}
+            {result.sourceUrl && result.sourceFileName && (
+              <p className="text-xs text-gray-500 mb-2">
+                Исходник сохранён как {result.sourceFileName}:{' '}
+                <code className="bg-gray-100 px-2 py-1 rounded">{result.sourceUrl}</code>
+              </p>
+            )}
+            {result.warning && (
+              <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                {result.warning}
+              </p>
+            )}
           </div>
         )}
       </div>

@@ -2,7 +2,8 @@ import { notFound } from 'next/navigation'
 import { getAllPosts, getPostById, markdownToHtml } from '@/lib/posts'
 import { isExternalImageUnoptimized } from '@/lib/images'
 import Image from 'next/image'
-import BlogEmbeds from '@/components/BlogEmbeds'
+import VideoPlayer from '@/components/VideoPlayer'
+import TelegramEmbed from '@/components/TelegramEmbed'
 import Link from 'next/link'
 
 export async function generateStaticParams() {
@@ -68,7 +69,17 @@ export default async function PostPage({ params }: { params: { id: string } }) {
           )
         })()}
 
-        <BlogEmbeds postId={post.id} video={post.video} telegram={post.telegram} />
+        {post.video && (
+          <div className="mb-8">
+            <VideoPlayer src={post.video} storageKey={`blog-${post.id}`} />
+          </div>
+        )}
+
+        {post.telegram && (
+          <div className="mb-8">
+            <TelegramEmbed url={post.telegram} />
+          </div>
+        )}
 
         <div
           className="prose prose-lg max-w-none
