@@ -167,13 +167,6 @@ export async function POST(request: NextRequest) {
     const targetDir = getSafePath(publicRoot, requested)
     const kind = uploadKindByPath(requested)
 
-    if (!kind) {
-      return NextResponse.json(
-        { error: 'Загрузка разрешена только в папках videos, photos и audio' },
-        { status: 400 }
-      )
-    }
-
     const dirStat = await fs.stat(targetDir)
     if (!dirStat.isDirectory()) {
       return NextResponse.json({ error: 'Путь не является папкой' }, { status: 400 })
@@ -190,7 +183,7 @@ export async function POST(request: NextRequest) {
 
     const originalName = sanitizeFileName(file.name || 'file')
     const ext = extensionOf(originalName)
-    if (!isAllowedExtension(kind, ext)) {
+    if (kind && !isAllowedExtension(kind, ext)) {
       return NextResponse.json(
         { error: `Неподдерживаемый формат для папки ${kind}` },
         { status: 400 }

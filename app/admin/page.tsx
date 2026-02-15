@@ -975,35 +975,31 @@ function AdminPageContent() {
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {uploadKind && (
-                      <>
-                        <input
-                          type="file"
-                          accept={uploadAccept}
-                          className="block text-sm text-gray-700 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
-                          onChange={(e) => setFileToUpload(e.target.files?.[0] || null)}
-                        />
-                        <button
-                          className="btn-primary px-4 py-2 disabled:opacity-60"
-                          disabled={!fileToUpload || uploading || !token.trim()}
-                          onClick={uploadToCurrentFolder}
-                        >
-                          {uploading ? 'Загрузка...' : 'Загрузить файл'}
-                        </button>
-                        {uploading && (
-                          <div className="min-w-56">
-                            <div className="h-2 rounded bg-gray-200 overflow-hidden">
-                              <div
-                                className="h-full bg-primary-500 transition-all duration-150"
-                                style={{ width: `${uploadProgress}%` }}
-                              />
-                            </div>
-                            <p className="text-xs text-gray-600 mt-1">
-                              Загрузка: {uploadProgress}%
-                            </p>
-                          </div>
-                        )}
-                      </>
+                    <input
+                      type="file"
+                      accept={uploadAccept}
+                      className="block text-sm text-gray-700 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
+                      onChange={(e) => setFileToUpload(e.target.files?.[0] || null)}
+                    />
+                    <button
+                      className="btn-primary px-4 py-2 disabled:opacity-60"
+                      disabled={!fileToUpload || uploading || !token.trim()}
+                      onClick={uploadToCurrentFolder}
+                    >
+                      {uploading ? 'Загрузка...' : 'Загрузить файл'}
+                    </button>
+                    {uploading && (
+                      <div className="min-w-56">
+                        <div className="h-2 rounded bg-gray-200 overflow-hidden">
+                          <div
+                            className="h-full bg-primary-500 transition-all duration-150"
+                            style={{ width: `${uploadProgress}%` }}
+                          />
+                        </div>
+                        <p className="text-xs text-gray-600 mt-1">
+                          Загрузка: {uploadProgress}%
+                        </p>
+                      </div>
                     )}
                     <button
                       className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 font-medium"
