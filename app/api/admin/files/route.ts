@@ -102,6 +102,15 @@ function getSafePath(publicRoot: string, relativePath: string): string {
   return resolved
 }
 
+function toMediaUrl(relativePath: string): string {
+  const normalized = normalizeRelative(relativePath)
+  const encoded = normalized
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
+  return `/media/${encoded}`
+}
+
 export async function GET(request: NextRequest) {
   const denied = requireAdminToken(request)
   if (denied) return denied
@@ -130,7 +139,7 @@ export async function GET(request: NextRequest) {
           relativePath,
           size: isDir ? null : st.size,
           updatedAt: st.mtime.toISOString(),
-          publicUrl: isDir ? null : `/${relativePath}`,
+          publicUrl: isDir ? null : toMediaUrl(relativePath),
         }
       })
     )
@@ -213,7 +222,7 @@ export async function POST(request: NextRequest) {
           await fs.unlink(sourcePath)
         } catch {
           // Если не удалось удалить исходник, просто отдадим ссылку на него.
-          sourcePublicUrl = `/${normalizeRelative(path.relative(publicRoot, sourcePath))}`
+          sourcePublicUrl = toMediaUrl(path.relative(publicRoot, sourcePath))
         }
         transcoded = true
       } else {
@@ -226,7 +235,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       relativePath,
-      publicUrl: `/${relativePath}`,
+      publicUrl: toMediaUrl(relativePath),
       fileName: finalName,
       size: finalStat.size,
       sourceFileName: sourceName,
@@ -262,6 +271,73 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ success: true })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Ошибка удаления файла'
+    return NextResponse.json({ error: message }, { status: 400 })
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  const denied = requireAdminToken(request)
+  if (denied) return denied
+
+  try {
+    const publicRoot = path.join(process.cwd(), 'public')
+    const body = (await request.json()) as { target?: string; newName?: string }
+
+    const targetRelative = normalizeRelative(body?.target || '')
+    const requestedName = String(body?.newName || '').trim()
+    if (!targetRelative) {
+      return NextResponse.json({ error: 'target обязателен' }, { status: 400 })
+    }
+    if (!requestedName) {
+      return NextResponse.json({ error: 'newName обязателен' }, { status: 400 })
+    }
+
+    const sourcePath = getSafePath(publicRoot, targetRelative)
+    const sourceStat = await fs.stat(sourcePath)
+    if (!sourceStat.isFile()) {
+      return NextResponse.json({ error: 'Можно переименовать только файл' }, { status: 400 })
+    }
+
+    const sourceDir = path.dirname(sourcePath)
+    const sourceExt = extensionOf(path.basename(sourcePath))
+
+    let nextName = sanitizeFileName(requestedName)
+    const nextExt = extensionOf(nextName)
+    if (!nextExt && sourceExt) {
+      nextName = `${nextName}${sourceExt}`
+    }
+
+    const nextPath = path.join(sourceDir, nextName)
+    const nextRelative = normalizeRelative(path.relative(publicRoot, nextPath))
+
+    if (nextRelative === targetRelative) {
+      return NextResponse.json({
+        success: true,
+        relativePath: nextRelative,
+        publicUrl: toMediaUrl(nextRelative),
+        fileName: nextName,
+      })
+    }
+
+    try {
+      const existing = await fs.stat(nextPath)
+      if (existing.isFile()) {
+        return NextResponse.json({ error: 'Файл с таким именем уже существует' }, { status: 400 })
+      }
+    } catch {
+      // ok: target file name is available
+    }
+
+    await fs.rename(sourcePath, nextPath)
+
+    return NextResponse.json({
+      success: true,
+      relativePath: nextRelative,
+      publicUrl: toMediaUrl(nextRelative),
+      fileName: nextName,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Ошибка переименования файла'
     return NextResponse.json({ error: message }, { status: 400 })
   }
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import dynamic from 'next/dynamic'
 import type { VideoQuality } from '@/components/VideoPlayer'
 
@@ -16,7 +16,7 @@ interface VideoLesson {
   duration: string
   videoUrl?: string
   qualities?: VideoQualityData[]
-  matreshkaUrl?: string
+  rutubeUrl?: string
   rutubeId?: string
   rutubeToken?: string
 }
@@ -61,6 +61,7 @@ const DEFAULT_LEVEL = {
   gradient: 'from-primary-50 to-primary-100',
   icon: '🧘',
 }
+const PACKAGE_PREVIEW_FALLBACK_ICON = '🕉'
 
 /* ---------- Утилиты ---------- */
 
@@ -68,39 +69,57 @@ function priceLabel(price: number): string {
   return price === 0 ? 'Бесплатно' : `${price.toLocaleString('ru-RU')} ₽`
 }
 
+function parseDurationMinutes(value: string): number {
+  const trimmed = String(value || '').trim()
+  if (!trimmed) return 0
+  const match = trimmed.match(/(\d+)/)
+  if (!match) return 0
+  const parsed = Number(match[1])
+  if (!Number.isFinite(parsed) || parsed < 0) return 0
+  return Math.floor(parsed)
+}
+
+function formatDurationLabel(value: string): string {
+  const minutes = parseDurationMinutes(value)
+  if (minutes <= 0) return '0 мин'
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  if (h === 0) return `${m} мин`
+  return m > 0 ? `${h} ч ${m} мин` : `${h} ч`
+}
+
 function rutubeEmbedUrl(video: VideoLesson): string | null {
+  const fromUrl = (video.rutubeUrl || '').trim()
+  if (fromUrl) {
+    try {
+      const parsed = new URL(fromUrl)
+      const host = parsed.hostname.toLowerCase()
+      if (host === 'rutube.ru' || host === 'www.rutube.ru') {
+        const parts = parsed.pathname.split('/').filter(Boolean)
+        let videoId = ''
+
+        if (parts[0] === 'video' && parts[1] === 'private' && parts[2]) {
+          videoId = parts[2]
+        } else if (parts[0] === 'video' && parts[1]) {
+          videoId = parts[1]
+        } else if (parts[0] === 'play' && parts[1] === 'embed' && parts[2]) {
+          videoId = parts[2]
+        }
+
+        if (videoId) {
+          const token = (parsed.searchParams.get('p') || '').trim()
+          const base = `https://rutube.ru/play/embed/${videoId}/`
+          return token ? `${base}?p=${encodeURIComponent(token)}` : base
+        }
+      }
+    } catch {
+      // fallback на старый формат ниже
+    }
+  }
+
   if (!video.rutubeId) return null
   const base = `https://rutube.ru/play/embed/${video.rutubeId}/`
   return video.rutubeToken ? `${base}?p=${video.rutubeToken}` : base
-}
-
-function matreshkaEmbedUrl(video: VideoLesson): string | null {
-  const raw = (video.matreshkaUrl || '').trim()
-  if (!raw) return null
-
-  try {
-    const parsed = new URL(raw)
-    const host = parsed.hostname.toLowerCase()
-    if (host !== 'matreshka.tv' && host !== 'www.matreshka.tv') return null
-
-    const parts = parsed.pathname.split('/').filter(Boolean)
-    let videoId = ''
-
-    if (parts[0] === 'video' && parts[1]) {
-      videoId = parts[1]
-    } else if (parts[0] === 'embed' && parts[1] === 'video' && parts[2]) {
-      videoId = parts[2]
-    }
-
-    if (!videoId) return null
-
-    const s = (parsed.searchParams.get('s') || '').trim()
-    return s
-      ? `https://matreshka.tv/embed/video/${videoId}?s=${encodeURIComponent(s)}`
-      : `https://matreshka.tv/embed/video/${videoId}`
-  } catch {
-    return null
-  }
 }
 
 /* ---------- Компонент ---------- */
@@ -108,10 +127,7 @@ export default function YogaPage() {
   const [packages, setPackages] = useState<YogaPackage[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedPackage, setSelectedPackage] = useState<YogaPackage | null>(null)
-  const [activeFilter, setActiveFilter] = useState<string>('all')
   const [playingVideo, setPlayingVideo] = useState<VideoLesson | null>(null)
-  const matreshkaContainerRef = useRef<HTMLDivElement | null>(null)
-  const [isMatreshkaFullscreen, setIsMatreshkaFullscreen] = useState(false)
 
   useEffect(() => {
     fetch('/api/yoga/packages')
@@ -121,27 +137,12 @@ export default function YogaPage() {
       .finally(() => setLoading(false))
   }, [])
 
-  useEffect(() => {
-    function onFullscreenChange() {
-      setIsMatreshkaFullscreen(document.fullscreenElement === matreshkaContainerRef.current)
-    }
-    document.addEventListener('fullscreenchange', onFullscreenChange)
-    return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
-  }, [])
-
-  // Уникальные уровни для фильтрации
-  const levels = ['all', ...Array.from(new Set(packages.map((p) => p.level)))]
-
-  const filtered =
-    activeFilter === 'all'
-      ? packages.filter((p) => p.available)
-      : packages.filter((p) => p.available && p.level === activeFilter)
+  const visiblePackages = packages.filter((p) => p.available)
 
   const totalVideos = (pkg: YogaPackage) => pkg.videos.length
   const totalDuration = (pkg: YogaPackage) => {
     const minutes = pkg.videos.reduce((sum, v) => {
-      const match = v.duration.match(/(\d+)/)
-      return sum + (match ? Number(match[1]) : 0)
+      return sum + parseDurationMinutes(v.duration)
     }, 0)
     if (minutes === 0) return ''
     const h = Math.floor(minutes / 60)
@@ -150,39 +151,7 @@ export default function YogaPage() {
   }
 
   const isFree = (pkg: YogaPackage) => pkg.price === 0
-  const playingMatreshkaUrl = playingVideo ? matreshkaEmbedUrl(playingVideo) : null
   const playingRutubeUrl = playingVideo ? rutubeEmbedUrl(playingVideo) : null
-
-  function hasPlayableSource(video: VideoLesson): boolean {
-    return !!(video.videoUrl || matreshkaEmbedUrl(video) || rutubeEmbedUrl(video))
-  }
-
-  function playNextLesson() {
-    if (!selectedPackage || !playingVideo) return
-    const videos = selectedPackage.videos
-    if (videos.length === 0) return
-
-    const currentIndex = videos.indexOf(playingVideo)
-    if (currentIndex < 0) return
-
-    for (let step = 1; step <= videos.length; step += 1) {
-      const idx = (currentIndex + step) % videos.length
-      const candidate = videos[idx]
-      if (hasPlayableSource(candidate)) {
-        setPlayingVideo(candidate)
-        return
-      }
-    }
-  }
-
-  async function toggleMatreshkaFullscreen() {
-    if (!matreshkaContainerRef.current) return
-    if (document.fullscreenElement === matreshkaContainerRef.current) {
-      await document.exitFullscreen()
-      return
-    }
-    await matreshkaContainerRef.current.requestFullscreen()
-  }
 
   return (
     <div className="min-h-screen">
@@ -190,33 +159,12 @@ export default function YogaPage() {
       <section className="section-padding bg-gradient-to-br from-primary-50 to-accent-50">
         <div className="max-w-7xl mx-auto text-center">
           <h1 className="text-5xl md:text-6xl font-serif font-bold text-gray-900 mb-4">
-            🧘 Видеоуроки йоги
+            Видеоуроки
           </h1>
           <p className="text-xl text-gray-600 max-w-2xl mx-auto">
             Выберите пакет видеоуроков по вашему уровню. Каждый пакет — это полноценный курс
             с пошаговыми занятиями.
           </p>
-        </div>
-      </section>
-
-      {/* Фильтры по уровню */}
-      <section className="bg-white border-b sticky top-20 z-30">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex flex-wrap gap-2 justify-center">
-            {levels.map((lvl) => (
-              <button
-                key={lvl}
-                onClick={() => setActiveFilter(lvl)}
-                className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
-                  activeFilter === lvl
-                    ? 'bg-primary-500 text-white shadow-md'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-              >
-                {lvl === 'all' ? 'Все пакеты' : lvl}
-              </button>
-            ))}
-          </div>
         </div>
       </section>
 
@@ -227,7 +175,7 @@ export default function YogaPage() {
             <div className="text-center py-16">
               <p className="text-gray-500 text-lg">Загрузка пакетов...</p>
             </div>
-          ) : filtered.length === 0 ? (
+          ) : visiblePackages.length === 0 ? (
             <div className="text-center py-16">
               <div className="text-6xl mb-4">🧘</div>
               <p className="text-gray-500 text-lg">
@@ -236,7 +184,7 @@ export default function YogaPage() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-              {filtered.map((pkg) => {
+              {visiblePackages.map((pkg) => {
                 const style = LEVEL_STYLES[pkg.level] || DEFAULT_LEVEL
                 const free = isFree(pkg)
 
@@ -258,7 +206,7 @@ export default function YogaPage() {
                         />
                       ) : (
                         <span className="text-7xl group-hover:scale-110 transition-transform duration-300">
-                          {pkg.image || style.icon}
+                          {pkg.image || PACKAGE_PREVIEW_FALLBACK_ICON}
                         </span>
                       )}
 
@@ -404,7 +352,7 @@ export default function YogaPage() {
               </p>
 
               {/* Встроенный видеоплеер */}
-              {playingVideo && (playingVideo.videoUrl || playingMatreshkaUrl || playingRutubeUrl) && (
+              {playingVideo && (playingVideo.videoUrl || playingRutubeUrl) && (
                 <div className="mb-6">
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-base font-semibold text-gray-900">
@@ -428,36 +376,6 @@ export default function YogaPage() {
                       qualities={playingVideo.qualities as VideoQuality[] | undefined}
                       storageKey={`${selectedPackage.id}-${selectedPackage.videos.indexOf(playingVideo)}`}
                     />
-                  ) : playingMatreshkaUrl ? (
-                    <div
-                      ref={matreshkaContainerRef}
-                      className="relative w-full rounded-xl overflow-hidden bg-black"
-                      style={{ paddingTop: '56.25%' }}
-                    >
-                      <iframe
-                        src={playingMatreshkaUrl}
-                        className="absolute inset-0 w-full h-full"
-                        frameBorder="0"
-                        allow="autoplay; encrypted-media; picture-in-picture; clipboard-write"
-                      />
-                      <button
-                        type="button"
-                        onClick={playNextLesson}
-                        className="absolute -bottom-1 right-14 h-[52px] w-10 rounded-md bg-white text-black pointer-events-auto flex items-center justify-center text-sm"
-                        aria-label="Следующее занятие"
-                        title="Следующее занятие"
-                      >
-                        ⏭️
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void toggleMatreshkaFullscreen()}
-                        className="absolute bottom-3 right-2 h-7 w-10 rounded-md bg-transparent text-transparent border-0 p-0 m-0"
-                        aria-label={isMatreshkaFullscreen ? 'Выйти из полного экрана' : 'Открыть на весь экран'}
-                      >
-                        
-                      </button>
-                    </div>
                   ) : (
                     /* Рутуб iframe */
                     <div className="relative w-full rounded-xl overflow-hidden bg-black" style={{ paddingTop: '56.25%' }}>
@@ -479,7 +397,7 @@ export default function YogaPage() {
               </h3>
               <div className="space-y-2 mb-8">
                 {selectedPackage.videos.map((video, i) => {
-                  const hasVideo = !!(video.videoUrl || matreshkaEmbedUrl(video) || video.rutubeId)
+                  const hasVideo = !!(video.videoUrl || video.rutubeUrl || video.rutubeId)
                   const isPlaying = playingVideo === video
 
                   return (
@@ -516,7 +434,7 @@ export default function YogaPage() {
                         )}
                       </div>
                       <span className="text-gray-500 text-xs flex-shrink-0 ml-3">
-                        {video.duration}
+                        {formatDurationLabel(video.duration)}
                       </span>
                     </div>
                   )

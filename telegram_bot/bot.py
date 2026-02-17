@@ -13,6 +13,7 @@ import secrets
 import sqlite3
 import subprocess
 import threading
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Literal, Optional
@@ -117,6 +118,40 @@ chat_pkg_target: Dict[int, str] = {}       # ID пакета для действ
 chat_video_draft: Dict[int, dict] = {}     # черновик нового видео {title, duration, position}
 chat_edit_vid_idx: Dict[int, int] = {}     # индекс видео для редактирования
 
+STATE_CLEANUP_INTERVAL_SECONDS = 4 * 60 * 60
+_runtime_state_lock = threading.Lock()
+
+
+def clear_runtime_dialog_state() -> None:
+    """
+    Полностью очищает временное in-memory состояние диалога бота.
+    Нужна, чтобы старые черновики/состояния не висели бесконечно.
+    """
+    with _runtime_state_lock:
+        chat_state.clear()
+        chat_post_files.clear()
+        chat_edit_post_files.clear()
+        chat_upload_dirs.clear()
+        chat_rename_targets.clear()
+        chat_pkg_draft.clear()
+        chat_pkg_target.clear()
+        chat_video_draft.clear()
+        chat_edit_vid_idx.clear()
+
+
+def _periodic_state_cleanup_worker() -> None:
+    while True:
+        time.sleep(STATE_CLEANUP_INTERVAL_SECONDS)
+        clear_runtime_dialog_state()
+        print(
+            f"[cleanup] Runtime chat state cleared at {datetime.now().isoformat(timespec='seconds')}",
+            flush=True,
+        )
+
+
+def start_periodic_state_cleanup() -> None:
+    threading.Thread(target=_periodic_state_cleanup_worker, daemon=True).start()
+
 
 def is_admin_chat(chat_id: int) -> bool:
     if not ADMIN_CHAT_IDS:
@@ -209,27 +244,22 @@ def _run_cmd(args: list[str], timeout: int = 120) -> tuple[int, str]:
 
 
 def sync_bot_content_to_github(chat_id: int) -> tuple[bool, str]:
-    tracked_paths = [
-        "content/posts",
-        "public/photos",
-        "public/audio",
-        "public/videos",
-        "content/playlist",
-    ]
+    # Синхронизируем весь пользовательский контент (включая файлы,
+    # которые могут быть в .gitignore) из content/ и public/.
+    tracked_paths = ["content", "public"]
 
-    status_code, status_output = _run_cmd(
-        ["git", "status", "--porcelain", "--", *tracked_paths],
-        timeout=60,
-    )
-    if status_code != 0:
-        return False, f"Не удалось проверить git status.\n{status_output}"
-
-    if not status_output.strip() or status_output.strip() == "нет вывода":
-        return True, "Изменений контента для GitHub не найдено."
-
-    add_code, add_output = _run_cmd(["git", "add", "--", *tracked_paths], timeout=120)
+    add_code, add_output = _run_cmd(["git", "add", "-A", "-f", "--", *tracked_paths], timeout=180)
     if add_code != 0:
         return False, f"Ошибка git add.\n{add_output}"
+
+    staged_code, staged_output = _run_cmd(
+        ["git", "diff", "--cached", "--name-only", "--", *tracked_paths],
+        timeout=60,
+    )
+    if staged_code != 0:
+        return False, f"Не удалось проверить staged-изменения.\n{staged_output}"
+    if not staged_output.strip() or staged_output.strip() == "нет вывода":
+        return True, "Изменений контента для GitHub не найдено."
 
     commit_message = f"chore(content): sync bot updates {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     commit_code, commit_output = _run_cmd(["git", "commit", "-m", commit_message], timeout=120)
@@ -292,6 +322,31 @@ def run_site_rebuild(chat_id: int) -> None:
         bot.send_message(chat_id, "⏱️ Команда выполнялась слишком долго и была остановлена по таймауту.")
     except Exception as e:
         bot.send_message(chat_id, f"❌ Ошибка запуска пересборки: {e}")
+
+
+def run_site_restart(chat_id: int) -> None:
+    try:
+        bot.send_message(chat_id, "🔄 Обновляю сайт: `pm2 restart sister-site`", parse_mode="Markdown")
+        restart_code, restart_output = _run_cmd(["pm2", "restart", "sister-site"], timeout=120)
+        if restart_code != 0:
+            bot.send_message(
+                chat_id,
+                "❌ Не удалось обновить сайт (ошибка PM2).\n\n"
+                f"Код выхода: {restart_code}\n\n"
+                f"Лог PM2:\n{restart_output}",
+            )
+            return
+
+        bot.send_message(
+            chat_id,
+            "✅ Сайт обновлен: процесс `sister-site` перезапущен.\n\n"
+            f"Лог PM2:\n{restart_output}",
+            parse_mode="Markdown",
+        )
+    except subprocess.TimeoutExpired:
+        bot.send_message(chat_id, "⏱️ Перезапуск выполнялся слишком долго и был остановлен по таймауту.")
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Ошибка при обновлении сайта: {e}")
 
 
 def read_slots():
@@ -363,6 +418,7 @@ def make_main_keyboard() -> types.ReplyKeyboardMarkup:
 def make_system_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(types.KeyboardButton("Деплой"))
+    kb.row(types.KeyboardButton("Обновить сайт"))
     kb.row(types.KeyboardButton("Получить токен"))
     kb.row(types.KeyboardButton("⬅️ В главное меню"))
     return kb
@@ -806,7 +862,7 @@ def cmd_start(message):
         "• «Управление расписанием» — слоты, записи, отмены\n"
         "• «Управление блогом» — работа с постами\n"
         "• «Управление уроками» — пакеты видеоуроков йоги\n"
-        "• «Системные функции» — деплой и выдача админ-токена\n\n"
+        "• «Системные функции» — деплой, обновление сайта и выдача админ-токена\n\n"
         "Технически слоты хранятся в available-slots.json, записи — в bookings.json,\n"
         "пакеты уроков — в content/yoga/packages.json."
     )
@@ -860,7 +916,7 @@ def cmd_deploy(message):
     threading.Thread(target=run_site_rebuild, args=(chat_id,), daemon=True).start()
 
 
-@bot.message_handler(func=lambda m: m.text in ["Деплой", "Получить токен"])
+@bot.message_handler(func=lambda m: m.text in ["Деплой", "Обновить сайт", "Получить токен"])
 def handle_system_actions(message):
     chat_id = message.chat.id
     text = (message.text or "").strip()
@@ -869,6 +925,10 @@ def handle_system_actions(message):
 
     if text == "Деплой":
         threading.Thread(target=run_site_rebuild, args=(chat_id,), daemon=True).start()
+        return
+
+    if text == "Обновить сайт":
+        threading.Thread(target=run_site_restart, args=(chat_id,), daemon=True).start()
         return
 
     if text == "Получить токен":
@@ -3981,4 +4041,6 @@ def handle_text(message):
 if __name__ == "__main__":
     print("Бот запущен. Уведомления приходят с сайта, бот отвечает на /start.")
     print("Нажмите Ctrl+C для остановки.")
+    print("Временное состояние диалога очищается автоматически каждые 4 часа.")
+    start_periodic_state_cleanup()
     bot.infinity_polling()

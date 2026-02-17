@@ -16,7 +16,7 @@ async function sendTelegramNotification(order: {
   if (!token || !chatId) return
 
   const text = [
-    '🛍 Новый заказ мерча (оплачено)!',
+    '🛍 Новый заказ одежды (оплачено)!',
     '',
     `👕 ${order.productName}`,
     `📏 Размер: ${order.size}`,

@@ -57,7 +57,7 @@ async function handleMerchPayment(paymentId: string, metadata: Record<string, st
   })
 
   await sendTelegram(
-    `🛍 Новый заказ мерча (оплачено)!\n\n👕 ${order.productName}\n📏 Размер: ${order.size}\n💰 ${order.price} ₽\n👤 ${order.name}\n📱 ${order.phone}\n📦 Адрес: ${order.address}\n💬 ${order.comment || '—'}`
+    `🛍 Новый заказ одежды (оплачено)!\n\n👕 ${order.productName}\n📏 Размер: ${order.size}\n💰 ${order.price} ₽\n👤 ${order.name}\n📱 ${order.phone}\n📦 Адрес: ${order.address}\n💬 ${order.comment || '—'}`
   )
 }
 

@@ -17,7 +17,7 @@ async function sendTelegramNotification(order: {
 
   const paid = order.paymentId ? ' (оплачено)' : ''
   const text = [
-    `🛍 Новый заказ мерча${paid}!`,
+    `🛍 Новый заказ одежды${paid}!`,
     '',
     `👕 ${order.productName}`,
     `📏 Размер: ${order.size}`,

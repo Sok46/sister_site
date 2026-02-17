@@ -37,3 +37,17 @@ next-env.d.ts
 public/videos/*.MOV
 data/*.sqlite
 data/*.sqlite-*
+
+# user-managed content from admin/bot (do not commit)
+content/bookings/*.json
+content/yoga/packages.json
+content/playlist/*.json
+content/posts/*.md
+content/merch/orders.json
+
+# user-uploaded media/files in public
+public/videos/**
+public/photos/**
+public/audio/**
+public/notgallery/**
+public/uploads/**

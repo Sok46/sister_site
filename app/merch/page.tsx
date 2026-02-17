@@ -30,11 +30,54 @@ interface Product {
   id: string
   name: string
   description: string
+  story?: string
   price: number
   sizes: string[]
   color: string
   image: string
   available: boolean
+}
+
+function RevealOnScroll({
+  index,
+  children,
+}: {
+  index: number
+  children: React.ReactNode
+}) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [visible, setVisible] = useState(false)
+
+  useEffect(() => {
+    const element = ref.current
+    if (!element) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const [entry] = entries
+        if (entry?.isIntersecting) {
+          setVisible(true)
+          observer.disconnect()
+        }
+      },
+      { threshold: 0.2 }
+    )
+
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+
+  return (
+    <div
+      ref={ref}
+      className={`transition-all duration-700 ease-out ${
+        visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'
+      }`}
+      style={{ transitionDelay: `${Math.min(index * 120, 360)}ms` }}
+    >
+      {children}
+    </div>
+  )
 }
 
 /* ---------- Утилита ---------- */
@@ -244,7 +287,7 @@ export default function MerchPage() {
       <section className="section-padding bg-gradient-to-br from-primary-50 to-accent-50">
         <div className="max-w-7xl mx-auto text-center">
           <h1 className="text-5xl md:text-6xl font-serif font-bold text-gray-900 mb-4">
-            👕 Мерч
+            👕 Одежда
           </h1>
           <p className="text-xl text-gray-600 max-w-2xl mx-auto">
             Авторские футболки для тех, кто живёт в гармонии. Натуральные ткани, стильный дизайн, позитивная энергия.
@@ -267,59 +310,74 @@ export default function MerchPage() {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-              {products.filter((p) => p.available).map((product) => {
+            <div className="space-y-8">
+              {products.filter((p) => p.available).map((product, index) => {
                 const colors = PRODUCT_COLORS[product.id] || DEFAULT_COLORS
                 const isDark = product.id === 'tshirt-om'
+                const storyText = (product.story || product.description || '').trim()
 
                 return (
-                  <div
-                    key={product.id}
-                    className="card group cursor-pointer"
-                    onClick={() => openOrder(product)}
-                  >
-                    {/* Визуальная заглушка вместо фото */}
-                    <div className={`relative h-64 bg-gradient-to-br ${colors.bg} flex items-center justify-center overflow-hidden`}>
-                      <div className="text-center">
-                        <div className={`text-7xl mb-2 group-hover:scale-110 transition-transform duration-300`}>
-                          {colors.emoji}
+                  <div key={product.id} className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-stretch">
+                    <div
+                      className="card group cursor-pointer lg:col-span-1"
+                      onClick={() => openOrder(product)}
+                    >
+                      {/* Визуальная заглушка вместо фото */}
+                      <div className={`relative h-64 bg-gradient-to-br ${colors.bg} flex items-center justify-center overflow-hidden`}>
+                        <div className="text-center">
+                          <div className={`text-7xl mb-2 group-hover:scale-110 transition-transform duration-300`}>
+                            {colors.emoji}
+                          </div>
+                          <span className={`text-sm font-medium ${isDark ? 'text-gray-300' : 'text-gray-500'}`}>
+                            {product.color}
+                          </span>
                         </div>
-                        <span className={`text-sm font-medium ${isDark ? 'text-gray-300' : 'text-gray-500'}`}>
-                          {product.color}
-                        </span>
+                        {/* Бейдж с ценой */}
+                        <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm rounded-full px-3 py-1 shadow-sm">
+                          <span className="text-sm font-bold text-gray-900">
+                            {product.price.toLocaleString('ru-RU')} ₽
+                          </span>
+                        </div>
                       </div>
-                      {/* Бейдж с ценой */}
-                      <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm rounded-full px-3 py-1 shadow-sm">
-                        <span className="text-sm font-bold text-gray-900">
-                          {product.price.toLocaleString('ru-RU')} ₽
-                        </span>
+
+                      {/* Описание */}
+                      <div className="p-5">
+                        <h3 className="text-xl font-serif font-bold text-gray-900 mb-2 group-hover:text-primary-600 transition-colors">
+                          {product.name}
+                        </h3>
+                        <p className="text-gray-600 text-sm mb-3 line-clamp-2">
+                          {product.description}
+                        </p>
+                        <div className="flex items-center justify-between">
+                          <div className="flex gap-1">
+                            {product.sizes.map((s) => (
+                              <span
+                                key={s}
+                                className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded"
+                              >
+                                {s}
+                              </span>
+                            ))}
+                          </div>
+                          <span className="text-primary-600 font-medium text-sm group-hover:translate-x-1 transition-transform inline-block">
+                            Купить →
+                          </span>
+                        </div>
                       </div>
                     </div>
 
-                    {/* Описание */}
-                    <div className="p-5">
-                      <h3 className="text-xl font-serif font-bold text-gray-900 mb-2 group-hover:text-primary-600 transition-colors">
-                        {product.name}
-                      </h3>
-                      <p className="text-gray-600 text-sm mb-3 line-clamp-2">
-                        {product.description}
-                      </p>
-                      <div className="flex items-center justify-between">
-                        <div className="flex gap-1">
-                          {product.sizes.map((s) => (
-                            <span
-                              key={s}
-                              className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded"
-                            >
-                              {s}
-                            </span>
-                          ))}
+                    <RevealOnScroll index={index}>
+                      <div className="lg:col-span-1 h-full flex flex-col justify-between py-2">
+                        <div>
+                          <h3 className="text-2xl font-serif font-bold text-gray-900 mb-3">
+                            {product.name}
+                          </h3>
+                          <p className="text-gray-700 leading-relaxed">
+                            {storyText}
+                          </p>
                         </div>
-                        <span className="text-primary-600 font-medium text-sm group-hover:translate-x-1 transition-transform inline-block">
-                          Купить →
-                        </span>
                       </div>
-                    </div>
+                    </RevealOnScroll>
                   </div>
                 )
               })}

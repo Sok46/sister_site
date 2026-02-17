@@ -5,6 +5,7 @@ export interface Product {
   id: string
   name: string
   description: string
+  story?: string
   price: number
   sizes: string[]
   color: string

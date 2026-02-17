@@ -4,17 +4,31 @@ import matter from 'gray-matter'
 import { getAllPackages, type YogaPackage, type VideoLesson } from '@/lib/yoga'
 import { getAllPlaylistItems, type PlaylistItem } from '@/lib/playlist'
 import { getAllPosts, type Post } from '@/lib/posts'
+import { getAllProducts, type Product as MerchProduct } from '@/lib/merch'
+import { getAllPhotos, type Photo } from '@/lib/gallery'
+import { getHomeGallerySelection, setHomeGallerySelection } from '@/lib/home-gallery'
+import { getHomeHeroSettings, setHomeHeroSettings, type HomeHeroSettings } from '@/lib/home-hero'
+
+export interface HomeGalleryPhotoOption {
+  name: string
+  path: string
+}
 
 export interface AdminContentSnapshot {
   yogaPackages: YogaPackage[]
   playlistItems: PlaylistItem[]
   posts: Post[]
+  merchProducts: MerchProduct[]
+  galleryPhotos: HomeGalleryPhotoOption[]
+  homeGallerySelection: string[]
+  homeHero: HomeHeroSettings
 }
 
 const ROOT = process.cwd()
 const YOGA_PACKAGES_FILE = path.join(ROOT, 'content', 'yoga', 'packages.json')
 const PLAYLIST_DIR = path.join(ROOT, 'content', 'playlist')
 const POSTS_DIR = path.join(ROOT, 'content', 'posts')
+const MERCH_PRODUCTS_FILE = path.join(ROOT, 'content', 'merch', 'products.json')
 
 function slugify(input: string): string {
   const slug = input
@@ -47,14 +61,102 @@ async function readPosts(): Promise<Post[]> {
   return getAllPosts()
 }
 
+async function readMerchProducts(): Promise<MerchProduct[]> {
+  return getAllProducts()
+}
+
 export async function getAdminContentSnapshot(): Promise<AdminContentSnapshot> {
-  const [yogaPackages, playlistItems, posts] = await Promise.all([
+  const [yogaPackages, playlistItems, posts, merchProducts, homeGallerySelection, homeHero] = await Promise.all([
     readYogaPackages(),
     readPlaylistItems(),
     readPosts(),
+    readMerchProducts(),
+    getHomeGallerySelection(),
+    getHomeHeroSettings(),
   ])
 
-  return { yogaPackages, playlistItems, posts }
+  const galleryPhotos: HomeGalleryPhotoOption[] = getAllPhotos().map((photo: Photo) => ({
+    name: photo.name,
+    path: photo.path,
+  }))
+
+  return {
+    yogaPackages,
+    playlistItems,
+    posts,
+    merchProducts,
+    galleryPhotos,
+    homeGallerySelection,
+    homeHero,
+  }
+}
+
+export async function updateHomeGallerySelection(paths: string[]): Promise<void> {
+  await setHomeGallerySelection(paths)
+}
+
+export async function updateHomeHero(settings: Partial<HomeHeroSettings>): Promise<void> {
+  await setHomeHeroSettings(settings)
+}
+
+function normalizeMerchProduct(input: Partial<MerchProduct>): MerchProduct {
+  const sizes = Array.isArray(input.sizes)
+    ? input.sizes.map((s) => String(s || '').trim()).filter(Boolean)
+    : []
+
+  return {
+    id: String(input.id || `product-${Date.now()}`),
+    name: String(input.name || 'Новый товар'),
+    description: String(input.description || ''),
+    story: String(input.story || ''),
+    price: Number.isFinite(Number(input.price)) ? Number(input.price) : 0,
+    sizes,
+    color: String(input.color || ''),
+    image: String(input.image || ''),
+    available: Boolean(input.available),
+  }
+}
+
+async function writeMerchProducts(products: MerchProduct[]): Promise<void> {
+  await ensureDir(path.dirname(MERCH_PRODUCTS_FILE))
+  await fs.writeFile(MERCH_PRODUCTS_FILE, JSON.stringify(products, null, 2), 'utf8')
+}
+
+export async function createMerchProduct(): Promise<void> {
+  const products = await readMerchProducts()
+  products.unshift(
+    normalizeMerchProduct({
+      id: `product-${Date.now()}`,
+      name: 'Новый товар',
+      description: '',
+      story: '',
+      price: 0,
+      sizes: ['S', 'M', 'L'],
+      color: '',
+      image: '',
+      available: true,
+    })
+  )
+  await writeMerchProducts(products)
+}
+
+export async function updateMerchProduct(id: string, patch: Partial<MerchProduct>): Promise<void> {
+  const products = await readMerchProducts()
+  const idx = products.findIndex((item) => item.id === id)
+  if (idx < 0) throw new Error('Товар не найден')
+
+  products[idx] = normalizeMerchProduct({
+    ...products[idx],
+    ...patch,
+    id: products[idx].id,
+  })
+  await writeMerchProducts(products)
+}
+
+export async function deleteMerchProduct(id: string): Promise<void> {
+  const products = await readMerchProducts()
+  const next = products.filter((item) => item.id !== id)
+  await writeMerchProducts(next)
 }
 
 export async function createYogaPackage(): Promise<YogaPackage> {
@@ -101,7 +203,7 @@ export async function addYogaVideo(packageId: string): Promise<void> {
 
   const video: VideoLesson = {
     title: 'Новый видеоурок',
-    duration: '0 мин',
+    duration: '0',
   }
   packages[idx].videos.push(video)
   await writeYogaPackages(packages)

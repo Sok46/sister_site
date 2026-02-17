@@ -7,12 +7,22 @@ import type { PlaylistItem } from '@/lib/playlist'
 import type { Post } from '@/lib/posts'
 import type { VideoLesson, YogaPackage } from '@/lib/yoga'
 
-type Tab = 'yoga' | 'playlist' | 'posts' | 'files' | 'bookings'
+type Tab = 'home' | 'yoga' | 'playlist' | 'merch' | 'posts' | 'files' | 'bookings'
 
 interface Snapshot {
   yogaPackages: YogaPackage[]
   playlistItems: PlaylistItem[]
   posts: Post[]
+  merchProducts: MerchProduct[]
+  galleryPhotos: Array<{ name: string; path: string }>
+  homeGallerySelection: string[]
+  homeHero: {
+    words: [string, string, string]
+    tagline: string
+    image: string
+    imageAlt: string
+    intro: string
+  }
 }
 
 interface PublicFileEntry {
@@ -22,6 +32,31 @@ interface PublicFileEntry {
   size: number | null
   updatedAt: string
   publicUrl: string | null
+}
+
+interface PublicImageEntry {
+  name: string
+  relativePath: string
+  publicUrl: string
+  folder: 'photos' | 'notgallery'
+}
+
+interface MerchProduct {
+  id: string
+  name: string
+  description: string
+  story?: string
+  price: number
+  sizes: string[]
+  color: string
+  image: string
+  available: boolean
+}
+
+interface PublicMediaEntry {
+  name: string
+  relativePath: string
+  publicUrl: string
 }
 
 interface AdminBooking {
@@ -53,13 +88,58 @@ function isVideoFilePath(filePath: string): boolean {
   return /\.(mp4|webm|mov|m4v|ogv)$/i.test(filePath)
 }
 
+function isImageFilePath(filePath: string): boolean {
+  return /\.(jpg|jpeg|png|webp|gif|avif)$/i.test(filePath)
+}
+
+function isAudioFilePath(filePath: string): boolean {
+  return /\.(mp3|wav|m4a|ogg)$/i.test(filePath)
+}
+
+function parseDurationMinutes(value: string): number {
+  const trimmed = String(value || '').trim()
+  if (!trimmed) return 0
+  const match = trimmed.match(/(\d+)/)
+  if (!match) return 0
+  const parsed = Number(match[1])
+  if (!Number.isFinite(parsed) || parsed < 0) return 0
+  return Math.floor(parsed)
+}
+
+function durationMinutesInputValue(value: string): string {
+  const minutes = parseDurationMinutes(value)
+  return minutes > 0 ? String(minutes) : ''
+}
+
+function uniquePhotoPaths(paths: string[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of paths) {
+    const value = String(raw || '').trim()
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    out.push(value)
+  }
+  return out
+}
+
+function defaultHomeHero() {
+  return {
+    words: ['ЙОГА', 'СЕМЬЯ', 'ГОРЫ'] as [string, string, string],
+    tagline: 'Здесь живёт ваш баланс',
+    image: '/photos/main.jpg',
+    imageAlt: 'Зоя',
+    intro: 'Привет! Я Зоя. А это — пространство для тех, кто ищет точку опоры в ритме современной жизни.',
+  }
+}
+
 function AdminPageContent() {
   const searchParams = useSearchParams()
   const [token, setToken] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState('')
-  const [activeTab, setActiveTab] = useState<Tab>('yoga')
+  const [activeTab, setActiveTab] = useState<Tab>('home')
   const [data, setData] = useState<Snapshot | null>(null)
   const [currentPublicPath, setCurrentPublicPath] = useState('')
   const [publicParentPath, setPublicParentPath] = useState<string | null>(null)
@@ -78,9 +158,22 @@ function AdminPageContent() {
   const [slotStartInput, setSlotStartInput] = useState('')
   const [slotEndInput, setSlotEndInput] = useState('')
   const [bookingFilterDate, setBookingFilterDate] = useState('')
+  const [imagePickerOpen, setImagePickerOpen] = useState(false)
+  const [imagePickerLoading, setImagePickerLoading] = useState(false)
+  const [imagePickerError, setImagePickerError] = useState('')
+  const [imagePickerItems, setImagePickerItems] = useState<PublicImageEntry[]>([])
+  const [merchImagePickerOpen, setMerchImagePickerOpen] = useState(false)
+  const [merchImagePickerLoading, setMerchImagePickerLoading] = useState(false)
+  const [merchImagePickerError, setMerchImagePickerError] = useState('')
+  const [merchImagePickerItems, setMerchImagePickerItems] = useState<PublicMediaEntry[]>([])
+  const [audioPickerOpen, setAudioPickerOpen] = useState(false)
+  const [audioPickerLoading, setAudioPickerLoading] = useState(false)
+  const [audioPickerError, setAudioPickerError] = useState('')
+  const [audioPickerItems, setAudioPickerItems] = useState<PublicMediaEntry[]>([])
 
   const [selectedYogaId, setSelectedYogaId] = useState<string | null>(null)
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null)
+  const [selectedMerchId, setSelectedMerchId] = useState<string | null>(null)
   const [selectedPostId, setSelectedPostId] = useState<string | null>(null)
 
   const selectedYoga = useMemo(
@@ -94,6 +187,10 @@ function AdminPageContent() {
   const selectedPost = useMemo(
     () => data?.posts.find((item) => item.id === selectedPostId) || null,
     [data, selectedPostId]
+  )
+  const selectedMerch = useMemo(
+    () => data?.merchProducts.find((item) => item.id === selectedMerchId) || null,
+    [data, selectedMerchId]
   )
 
   async function loadSnapshot() {
@@ -114,6 +211,10 @@ function AdminPageContent() {
         yogaPackages: payload.yogaPackages || [],
         playlistItems: payload.playlistItems || [],
         posts: payload.posts || [],
+        merchProducts: payload.merchProducts || [],
+        galleryPhotos: payload.galleryPhotos || [],
+        homeGallerySelection: payload.homeGallerySelection || [],
+        homeHero: payload.homeHero || defaultHomeHero(),
       }
       setData(snapshot)
       if (!selectedYogaId && snapshot.yogaPackages.length > 0) {
@@ -121,6 +222,9 @@ function AdminPageContent() {
       }
       if (!selectedPlaylistId && snapshot.playlistItems.length > 0) {
         setSelectedPlaylistId(snapshot.playlistItems[0].id)
+      }
+      if (!selectedMerchId && snapshot.merchProducts.length > 0) {
+        setSelectedMerchId(snapshot.merchProducts[0].id)
       }
       if (!selectedPostId && snapshot.posts.length > 0) {
         setSelectedPostId(snapshot.posts[0].id)
@@ -153,6 +257,10 @@ function AdminPageContent() {
         yogaPackages: payload.yogaPackages || [],
         playlistItems: payload.playlistItems || [],
         posts: payload.posts || [],
+        merchProducts: payload.merchProducts || [],
+        galleryPhotos: payload.galleryPhotos || [],
+        homeGallerySelection: payload.homeGallerySelection || [],
+        homeHero: payload.homeHero || defaultHomeHero(),
       }
       setData(snapshot)
       setSaved(successMessage)
@@ -276,6 +384,36 @@ function AdminPageContent() {
     }
   }
 
+  async function renamePublicFile(relativePath: string, currentName: string) {
+    const nextNameRaw = window.prompt('Новое имя файла:', currentName)
+    if (nextNameRaw === null) return
+    const nextName = nextNameRaw.trim()
+    if (!nextName || nextName === currentName) return
+
+    setPublicError('')
+    try {
+      const response = await fetch('/api/admin/files', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-token': token.trim(),
+        },
+        body: JSON.stringify({
+          target: relativePath,
+          newName: nextName,
+        }),
+      })
+      const payload = await response.json()
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || 'Ошибка переименования файла')
+      }
+      setSaved(`Файл переименован: ${currentName} -> ${payload.fileName || nextName}`)
+      await loadPublicFiles(currentPublicPath)
+    } catch (err) {
+      setPublicError(err instanceof Error ? err.message : 'Ошибка переименования')
+    }
+  }
+
   async function loadBookingsAdmin() {
     setBookingLoading(true)
     setBookingError('')
@@ -295,6 +433,102 @@ function AdminPageContent() {
       setBookingError(err instanceof Error ? err.message : 'Ошибка загрузки')
     } finally {
       setBookingLoading(false)
+    }
+  }
+
+  async function loadYogaImagePickerItems() {
+    setImagePickerLoading(true)
+    setImagePickerError('')
+    try {
+      const folders: Array<'photos' | 'notgallery'> = ['photos', 'notgallery']
+      const chunks = await Promise.all(
+        folders.map(async (folder) => {
+          const response = await fetch(`/api/admin/files?path=${encodeURIComponent(folder)}`, {
+            headers: {
+              'x-admin-token': token.trim(),
+            },
+          })
+          const payload = await response.json()
+          if (!response.ok || payload.error) {
+            throw new Error(payload.error || `Не удалось загрузить /${folder}`)
+          }
+          const entries = (payload.entries || []) as PublicFileEntry[]
+          return entries
+            .filter((entry) => entry.kind === 'file' && entry.publicUrl && isImageFilePath(entry.publicUrl))
+            .map((entry) => ({
+              name: entry.name,
+              relativePath: entry.relativePath,
+              publicUrl: entry.publicUrl as string,
+              folder,
+            }))
+        })
+      )
+      const merged = chunks.flat().sort((a, b) => a.relativePath.localeCompare(b.relativePath, 'ru'))
+      setImagePickerItems(merged)
+    } catch (err) {
+      setImagePickerError(err instanceof Error ? err.message : 'Ошибка загрузки изображений')
+    } finally {
+      setImagePickerLoading(false)
+    }
+  }
+
+  async function loadPlaylistAudioPickerItems() {
+    setAudioPickerLoading(true)
+    setAudioPickerError('')
+    try {
+      const response = await fetch(`/api/admin/files?path=${encodeURIComponent('audio')}`, {
+        headers: {
+          'x-admin-token': token.trim(),
+        },
+      })
+      const payload = await response.json()
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || 'Не удалось загрузить /audio')
+      }
+      const entries = (payload.entries || []) as PublicFileEntry[]
+      const items = entries
+        .filter((entry) => entry.kind === 'file' && entry.publicUrl && isAudioFilePath(entry.publicUrl))
+        .map((entry) => ({
+          name: entry.name,
+          relativePath: entry.relativePath,
+          publicUrl: entry.publicUrl as string,
+        }))
+        .sort((a, b) => a.relativePath.localeCompare(b.relativePath, 'ru'))
+      setAudioPickerItems(items)
+    } catch (err) {
+      setAudioPickerError(err instanceof Error ? err.message : 'Ошибка загрузки аудио')
+    } finally {
+      setAudioPickerLoading(false)
+    }
+  }
+
+  async function loadMerchImagePickerItems() {
+    setMerchImagePickerLoading(true)
+    setMerchImagePickerError('')
+    try {
+      const response = await fetch(`/api/admin/files?path=${encodeURIComponent('notgallery')}`, {
+        headers: {
+          'x-admin-token': token.trim(),
+        },
+      })
+      const payload = await response.json()
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || 'Не удалось загрузить /notgallery')
+      }
+      const entries = (payload.entries || []) as PublicFileEntry[]
+      const items = entries
+        .filter((entry) => entry.kind === 'file' && entry.publicUrl && isImageFilePath(entry.publicUrl))
+        .map((entry) => ({
+          name: entry.name,
+          relativePath: entry.relativePath,
+          publicUrl: entry.publicUrl as string,
+        }))
+        .sort((a, b) => a.relativePath.localeCompare(b.relativePath, 'ru'))
+      setMerchImagePickerItems(items)
+    } catch (err) {
+      setMerchImagePickerError(err instanceof Error ? err.message : 'Ошибка загрузки изображений')
+    } finally {
+      setMerchImagePickerLoading(false)
     }
   }
 
@@ -415,6 +649,43 @@ function AdminPageContent() {
     })
   }
 
+  function updateSelectedMerch(patch: Partial<MerchProduct>) {
+    if (!data || !selectedMerch) return
+    setData({
+      ...data,
+      merchProducts: data.merchProducts.map((item) =>
+        item.id === selectedMerch.id ? { ...item, ...patch } : item
+      ),
+    })
+  }
+
+  function toggleHomeGalleryPhoto(photoPath: string) {
+    if (!data) return
+    const current = uniquePhotoPaths(data.homeGallerySelection || [])
+    const exists = current.includes(photoPath)
+    if (exists) {
+      setData({ ...data, homeGallerySelection: current.filter((path) => path !== photoPath) })
+      return
+    }
+    if (current.length >= 4) {
+      setError('Для главной страницы можно выбрать только 4 фотографии')
+      return
+    }
+    setError('')
+    setData({ ...data, homeGallerySelection: [...current, photoPath] })
+  }
+
+  function updateHomeHero(patch: Partial<Snapshot['homeHero']>) {
+    if (!data) return
+    setData({
+      ...data,
+      homeHero: {
+        ...(data.homeHero || defaultHomeHero()),
+        ...patch,
+      },
+    })
+  }
+
   const bookingDates = useMemo(
     () => Object.keys(bookingSlots || {}).sort((a, b) => a.localeCompare(b)),
     [bookingSlots]
@@ -426,6 +697,21 @@ function AdminPageContent() {
       ),
     [bookings, bookingFilterDate]
   )
+
+  useEffect(() => {
+    setImagePickerOpen(false)
+    setImagePickerError('')
+  }, [selectedYogaId])
+
+  useEffect(() => {
+    setAudioPickerOpen(false)
+    setAudioPickerError('')
+  }, [selectedPlaylistId])
+
+  useEffect(() => {
+    setMerchImagePickerOpen(false)
+    setMerchImagePickerError('')
+  }, [selectedMerchId])
 
   return (
     <div className="section-padding">
@@ -458,6 +744,12 @@ function AdminPageContent() {
           <div className="space-y-6">
             <div className="flex flex-wrap gap-2">
               <button
+                className={`px-4 py-2 rounded-lg font-medium ${activeTab === 'home' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700'}`}
+                onClick={() => setActiveTab('home')}
+              >
+                Главная
+              </button>
+              <button
                 className={`px-4 py-2 rounded-lg font-medium ${activeTab === 'yoga' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700'}`}
                 onClick={() => setActiveTab('yoga')}
               >
@@ -467,7 +759,13 @@ function AdminPageContent() {
                 className={`px-4 py-2 rounded-lg font-medium ${activeTab === 'playlist' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700'}`}
                 onClick={() => setActiveTab('playlist')}
               >
-                Аудио/видео
+                Плейлист
+              </button>
+              <button
+                className={`px-4 py-2 rounded-lg font-medium ${activeTab === 'merch' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700'}`}
+                onClick={() => setActiveTab('merch')}
+              >
+                Одежда
               </button>
               <button
                 className={`px-4 py-2 rounded-lg font-medium ${activeTab === 'posts' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700'}`}
@@ -498,6 +796,170 @@ function AdminPageContent() {
                 Записи
               </button>
             </div>
+
+            {activeTab === 'home' && (
+              <div className="space-y-6">
+                <section className="card p-5 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h2 className="text-xl font-serif font-bold">Стартовая секция (Hero)</h2>
+                    <button
+                      className="btn-primary"
+                      onClick={() =>
+                        runAction(
+                          {
+                            action: 'home.updateHero',
+                            homeHero: data.homeHero || defaultHomeHero(),
+                          },
+                          'Стартовая секция сохранена'
+                        )
+                      }
+                    >
+                      Сохранить Hero
+                    </button>
+                  </div>
+                  <div className="grid sm:grid-cols-3 gap-2">
+                    <input
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg uppercase"
+                      value={data.homeHero?.words?.[0] || ''}
+                      onChange={(e) =>
+                        updateHomeHero({
+                          words: [
+                            e.target.value.toUpperCase(),
+                            data.homeHero?.words?.[1] || '',
+                            data.homeHero?.words?.[2] || '',
+                          ],
+                        })
+                      }
+                      placeholder="Слово 1"
+                    />
+                    <input
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg uppercase"
+                      value={data.homeHero?.words?.[1] || ''}
+                      onChange={(e) =>
+                        updateHomeHero({
+                          words: [
+                            data.homeHero?.words?.[0] || '',
+                            e.target.value.toUpperCase(),
+                            data.homeHero?.words?.[2] || '',
+                          ],
+                        })
+                      }
+                      placeholder="Слово 2"
+                    />
+                    <input
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg uppercase"
+                      value={data.homeHero?.words?.[2] || ''}
+                      onChange={(e) =>
+                        updateHomeHero({
+                          words: [
+                            data.homeHero?.words?.[0] || '',
+                            data.homeHero?.words?.[1] || '',
+                            e.target.value.toUpperCase(),
+                          ],
+                        })
+                      }
+                      placeholder="Слово 3"
+                    />
+                  </div>
+                  <input
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    value={data.homeHero?.tagline || ''}
+                    onChange={(e) => updateHomeHero({ tagline: e.target.value })}
+                    placeholder="Слоган (например: Здесь живёт ваш баланс)"
+                  />
+                  <input
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    value={data.homeHero?.image || ''}
+                    onChange={(e) => updateHomeHero({ image: e.target.value })}
+                    placeholder="Фото (например: /photos/main.jpg)"
+                  />
+                  <textarea
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg min-h-24"
+                    value={data.homeHero?.intro || ''}
+                    onChange={(e) => updateHomeHero({ intro: e.target.value })}
+                    placeholder="Приветственный текст под фото"
+                  />
+
+                  {data.galleryPhotos.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-sm text-gray-600">Быстрый выбор фото из /photos:</p>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 max-h-56 overflow-auto">
+                        {data.galleryPhotos.map((photo) => {
+                          const selected = (data.homeHero?.image || '') === photo.path
+                          return (
+                            <button
+                              key={`hero-${photo.path}`}
+                              type="button"
+                              onClick={() => updateHomeHero({ image: photo.path })}
+                              className={`rounded-lg border overflow-hidden ${selected ? 'border-primary-500 ring-2 ring-primary-200' : 'border-gray-200'}`}
+                              title={photo.path}
+                            >
+                              <img src={photo.path} alt={photo.name} className="w-full h-20 object-cover bg-gray-100" />
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                <section className="card p-5 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h2 className="text-xl font-serif font-bold">Фотогалерея на главной</h2>
+                    <button
+                      className="btn-primary disabled:opacity-60"
+                      disabled={(data.homeGallerySelection || []).length !== 4}
+                      onClick={() =>
+                        runAction(
+                          {
+                            action: 'gallery.setHomePhotos',
+                            homeGallerySelection: uniquePhotoPaths(data.homeGallerySelection || []).slice(0, 4),
+                          },
+                          'Фотогалерея главной страницы сохранена'
+                        )
+                      }
+                    >
+                      Сохранить 4 фото
+                    </button>
+                  </div>
+                  <p className="text-sm text-gray-600">
+                    Выберите ровно 4 фотографии из <code className="bg-gray-100 px-1 rounded">public/photos</code>,
+                    которые будут показаны в блоке «Фотогалерея» на главной странице.
+                  </p>
+                  <p className="text-sm">
+                    Выбрано: <span className="font-semibold">{(data.homeGallerySelection || []).length}</span> / 4
+                  </p>
+                  {data.galleryPhotos.length === 0 ? (
+                    <p className="text-sm text-gray-500">В папке /photos пока нет изображений.</p>
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3">
+                      {data.galleryPhotos.map((photo) => {
+                        const selected = (data.homeGallerySelection || []).includes(photo.path)
+                        return (
+                          <button
+                            key={photo.path}
+                            type="button"
+                            onClick={() => toggleHomeGalleryPhoto(photo.path)}
+                            className={`rounded-lg border overflow-hidden text-left ${
+                              selected ? 'border-primary-500 ring-2 ring-primary-200' : 'border-gray-200'
+                            }`}
+                            title={photo.path}
+                          >
+                            <img src={photo.path} alt={photo.name} className="w-full h-24 object-cover bg-gray-100" />
+                            <div className="px-2 py-1">
+                              <p className="text-[11px] text-gray-800 truncate">{photo.name}</p>
+                              <p className={`text-[11px] ${selected ? 'text-primary-700 font-medium' : 'text-gray-500'}`}>
+                                {selected ? 'Выбрано' : 'Не выбрано'}
+                              </p>
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </section>
+              </div>
+            )}
 
             {activeTab === 'yoga' && (
               <section className="grid lg:grid-cols-2 gap-6">
@@ -578,6 +1040,77 @@ function AdminPageContent() {
                           placeholder="Картинка или эмодзи"
                         />
                       </div>
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 font-medium hover:bg-gray-200"
+                          disabled={!token.trim()}
+                          onClick={async () => {
+                            const nextOpen = !imagePickerOpen
+                            setImagePickerOpen(nextOpen)
+                            if (nextOpen && imagePickerItems.length === 0 && !imagePickerLoading) {
+                              await loadYogaImagePickerItems()
+                            }
+                          }}
+                        >
+                          Выбрать картинку из public
+                        </button>
+                        {imagePickerOpen && (
+                          <div className="border rounded-lg p-3 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-sm font-medium text-gray-700">
+                                /photos и /notgallery
+                              </p>
+                              <button
+                                type="button"
+                                className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200"
+                                disabled={imagePickerLoading}
+                                onClick={loadYogaImagePickerItems}
+                              >
+                                Обновить
+                              </button>
+                            </div>
+                            {imagePickerError && (
+                              <p className="text-sm text-red-600">{imagePickerError}</p>
+                            )}
+                            {imagePickerLoading ? (
+                              <p className="text-sm text-gray-500">Загрузка миниатюр...</p>
+                            ) : imagePickerItems.length === 0 ? (
+                              <p className="text-sm text-gray-500">Изображения не найдены.</p>
+                            ) : (
+                              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-72 overflow-auto">
+                                {imagePickerItems.map((item) => {
+                                  const selected = selectedYoga.image === item.publicUrl
+                                  return (
+                                    <button
+                                      key={item.relativePath}
+                                      type="button"
+                                      className={`group rounded-lg border overflow-hidden text-left ${
+                                        selected ? 'border-primary-500 ring-2 ring-primary-200' : 'border-gray-200'
+                                      }`}
+                                      title={`/${item.relativePath}`}
+                                      onClick={() => {
+                                        updateSelectedYoga({ image: item.publicUrl })
+                                        setImagePickerOpen(false)
+                                      }}
+                                    >
+                                      <img
+                                        src={item.publicUrl}
+                                        alt={item.name}
+                                        className="w-full h-20 object-cover bg-gray-100"
+                                      />
+                                      <div className="px-2 py-1">
+                                        <p className="text-[11px] text-gray-600 truncate">{item.folder}</p>
+                                        <p className="text-[11px] text-gray-800 truncate">{item.name}</p>
+                                      </div>
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                       <label className="flex items-center gap-2 text-sm text-gray-700">
                         <input
                           type="checkbox"
@@ -605,6 +1138,10 @@ function AdminPageContent() {
                         <button
                           className="px-4 py-2 rounded-lg bg-red-100 text-red-700 font-medium"
                           onClick={async () => {
+                            const confirmed = window.confirm(
+                              `Удалить пакет "${selectedYoga.name}"? Это действие нельзя отменить.`
+                            )
+                            if (!confirmed) return
                             await runAction(
                               { action: 'yoga.deletePackage', packageId: selectedYoga.id },
                               'Пакет удален'
@@ -644,9 +1181,16 @@ function AdminPageContent() {
                             />
                             <input
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                              value={video.duration}
-                              onChange={(e) => updateSelectedVideo(index, { duration: e.target.value })}
-                              placeholder="Длительность, например 25 мин"
+                              type="number"
+                              min={0}
+                              step={1}
+                              value={durationMinutesInputValue(video.duration)}
+                              onChange={(e) =>
+                                updateSelectedVideo(index, {
+                                  duration: String(Math.floor(Math.max(0, asNumber(e.target.value)))),
+                                })
+                              }
+                              placeholder="Длительность в минутах"
                             />
                             <input
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg"
@@ -656,24 +1200,15 @@ function AdminPageContent() {
                             />
                             <input
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                              value={video.matreshkaUrl || ''}
-                              onChange={(e) => updateSelectedVideo(index, { matreshkaUrl: e.target.value })}
-                              placeholder="matreshkaUrl (https://matreshka.tv/video/...)"
+                              value={
+                                video.rutubeUrl ||
+                                (video.rutubeId
+                                  ? `https://rutube.ru/video/private/${video.rutubeId}/${video.rutubeToken ? `?p=${video.rutubeToken}` : ''}`
+                                  : '')
+                              }
+                              onChange={(e) => updateSelectedVideo(index, { rutubeUrl: e.target.value })}
+                              placeholder="rutubeUrl (https://rutube.ru/video/private/.../?p=...)"
                             />
-                            <div className="grid grid-cols-2 gap-2">
-                              <input
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                                value={video.rutubeId || ''}
-                                onChange={(e) => updateSelectedVideo(index, { rutubeId: e.target.value })}
-                                placeholder="rutubeId"
-                              />
-                              <input
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                                value={video.rutubeToken || ''}
-                                onChange={(e) => updateSelectedVideo(index, { rutubeToken: e.target.value })}
-                                placeholder="rutubeToken"
-                              />
-                            </div>
                             <div className="flex gap-2">
                               <button
                                 className="btn-primary px-4 py-2"
@@ -693,8 +1228,12 @@ function AdminPageContent() {
                               </button>
                               <button
                                 className="px-3 py-2 rounded-lg bg-red-100 text-red-700 text-sm font-medium"
-                                onClick={() =>
-                                  runAction(
+                                onClick={async () => {
+                                  const confirmed = window.confirm(
+                                    `Удалить видео "${video.title || `№${index + 1}`}" из пакета "${selectedYoga.name}"?`
+                                  )
+                                  if (!confirmed) return
+                                  await runAction(
                                     {
                                       action: 'yoga.deleteVideo',
                                       packageId: selectedYoga.id,
@@ -702,7 +1241,7 @@ function AdminPageContent() {
                                     },
                                     'Видеоурок удален'
                                   )
-                                }
+                                }}
                               >
                                 Удалить
                               </button>
@@ -713,7 +1252,7 @@ function AdminPageContent() {
                     </div>
                   )}
                 </div>
-              </section>
+                </section>
             )}
 
             {activeTab === 'playlist' && (
@@ -780,6 +1319,66 @@ function AdminPageContent() {
                         onChange={(e) => updateSelectedPlaylist({ src: e.target.value })}
                         placeholder="Путь к файлу, например /audio/file.mp3"
                       />
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 font-medium hover:bg-gray-200"
+                          disabled={!token.trim()}
+                          onClick={async () => {
+                            const nextOpen = !audioPickerOpen
+                            setAudioPickerOpen(nextOpen)
+                            if (nextOpen && audioPickerItems.length === 0 && !audioPickerLoading) {
+                              await loadPlaylistAudioPickerItems()
+                            }
+                          }}
+                        >
+                          Выбрать аудио из /audio
+                        </button>
+                        {audioPickerOpen && (
+                          <div className="border rounded-lg p-3 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-sm font-medium text-gray-700">Файлы /audio</p>
+                              <button
+                                type="button"
+                                className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200"
+                                disabled={audioPickerLoading}
+                                onClick={loadPlaylistAudioPickerItems}
+                              >
+                                Обновить
+                              </button>
+                            </div>
+                            {audioPickerError && <p className="text-sm text-red-600">{audioPickerError}</p>}
+                            {audioPickerLoading ? (
+                              <p className="text-sm text-gray-500">Загрузка аудио...</p>
+                            ) : audioPickerItems.length === 0 ? (
+                              <p className="text-sm text-gray-500">Аудиофайлы не найдены.</p>
+                            ) : (
+                              <div className="max-h-56 overflow-auto border rounded">
+                                {audioPickerItems.map((item) => {
+                                  const selected = selectedPlaylist.src === item.publicUrl
+                                  return (
+                                    <button
+                                      key={item.relativePath}
+                                      type="button"
+                                      onClick={() => {
+                                        updateSelectedPlaylist({ src: item.publicUrl })
+                                        setAudioPickerOpen(false)
+                                      }}
+                                      className={`w-full text-left px-3 py-2 text-sm border-b last:border-b-0 ${
+                                        selected ? 'bg-primary-50 text-primary-700' : 'hover:bg-gray-50 text-gray-800'
+                                      }`}
+                                      title={`/${item.relativePath}`}
+                                    >
+                                      <span className="mr-2">🎵</span>
+                                      {item.name}
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                       <input
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                         value={selectedPlaylist.duration || ''}
@@ -818,6 +1417,221 @@ function AdminPageContent() {
                               'Элемент удален'
                             )
                             setSelectedPlaylistId(null)
+                          }}
+                        >
+                          Удалить
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {activeTab === 'merch' && (
+              <section className="grid lg:grid-cols-2 gap-6">
+                <div className="card p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-xl font-serif font-bold">Товары одежды</h2>
+                    <button
+                      className="btn-primary px-4 py-2"
+                      onClick={async () => {
+                        await runAction({ action: 'merch.createProduct' }, 'Товар добавлен')
+                        if (data.merchProducts[0]) setSelectedMerchId(data.merchProducts[0].id)
+                      }}
+                    >
+                      + Товар
+                    </button>
+                  </div>
+                  <div className="space-y-2 max-h-[70vh] overflow-auto pr-1">
+                    {data.merchProducts.map((item) => (
+                      <button
+                        key={item.id}
+                        onClick={() => setSelectedMerchId(item.id)}
+                        className={`w-full text-left rounded-lg border p-3 transition ${
+                          selectedMerchId === item.id
+                            ? 'border-primary-500 bg-primary-50'
+                            : 'border-gray-200 bg-white hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="font-semibold text-gray-900 truncate">{item.name}</p>
+                            <p className="text-xs text-gray-500 truncate">{item.id}</p>
+                          </div>
+                          <span className="text-sm font-medium text-primary-600 whitespace-nowrap">
+                            {item.price} ₽
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="card p-5">
+                  {!selectedMerch ? (
+                    <p className="text-gray-500">Выберите товар для редактирования</p>
+                  ) : (
+                    <div className="space-y-3">
+                      <h3 className="text-xl font-serif font-bold">Редактирование товара</h3>
+                      <input
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                        value={selectedMerch.id}
+                        onChange={(e) => updateSelectedMerch({ id: e.target.value })}
+                        placeholder="ID товара"
+                      />
+                      <input
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                        value={selectedMerch.name}
+                        onChange={(e) => updateSelectedMerch({ name: e.target.value })}
+                        placeholder="Название"
+                      />
+                      <textarea
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg min-h-24"
+                        value={selectedMerch.description || ''}
+                        onChange={(e) => updateSelectedMerch({ description: e.target.value })}
+                        placeholder="Короткое описание"
+                      />
+                      <textarea
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg min-h-24"
+                        value={selectedMerch.story || ''}
+                        onChange={(e) => updateSelectedMerch({ story: e.target.value })}
+                        placeholder="История / расширенный текст справа на странице одежды"
+                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          type="number"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                          value={selectedMerch.price}
+                          onChange={(e) => updateSelectedMerch({ price: Math.max(0, asNumber(e.target.value)) })}
+                          placeholder="Цена"
+                        />
+                        <input
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                          value={selectedMerch.color || ''}
+                          onChange={(e) => updateSelectedMerch({ color: e.target.value })}
+                          placeholder="Цвет"
+                        />
+                      </div>
+                      <input
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                        value={selectedMerch.image || ''}
+                        onChange={(e) => updateSelectedMerch({ image: e.target.value })}
+                        placeholder="Фото (/merch/... или /photos/...)"
+                      />
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 font-medium hover:bg-gray-200"
+                          disabled={!token.trim()}
+                          onClick={async () => {
+                            const nextOpen = !merchImagePickerOpen
+                            setMerchImagePickerOpen(nextOpen)
+                            if (nextOpen && merchImagePickerItems.length === 0 && !merchImagePickerLoading) {
+                              await loadMerchImagePickerItems()
+                            }
+                          }}
+                        >
+                          Выбрать изображение из /notgallery
+                        </button>
+                        {merchImagePickerOpen && (
+                          <div className="border rounded-lg p-3 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-sm font-medium text-gray-700">Миниатюры /notgallery</p>
+                              <button
+                                type="button"
+                                className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-700 hover:bg-gray-200"
+                                disabled={merchImagePickerLoading}
+                                onClick={loadMerchImagePickerItems}
+                              >
+                                Обновить
+                              </button>
+                            </div>
+                            {merchImagePickerError && (
+                              <p className="text-sm text-red-600">{merchImagePickerError}</p>
+                            )}
+                            {merchImagePickerLoading ? (
+                              <p className="text-sm text-gray-500">Загрузка миниатюр...</p>
+                            ) : merchImagePickerItems.length === 0 ? (
+                              <p className="text-sm text-gray-500">Изображения не найдены.</p>
+                            ) : (
+                              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-72 overflow-auto">
+                                {merchImagePickerItems.map((item) => {
+                                  const selected = selectedMerch.image === item.publicUrl
+                                  return (
+                                    <button
+                                      key={item.relativePath}
+                                      type="button"
+                                      className={`rounded-lg border overflow-hidden text-left ${
+                                        selected ? 'border-primary-500 ring-2 ring-primary-200' : 'border-gray-200'
+                                      }`}
+                                      title={`/${item.relativePath}`}
+                                      onClick={() => {
+                                        updateSelectedMerch({ image: item.publicUrl })
+                                        setMerchImagePickerOpen(false)
+                                      }}
+                                    >
+                                      <img
+                                        src={item.publicUrl}
+                                        alt={item.name}
+                                        className="w-full h-20 object-cover bg-gray-100"
+                                      />
+                                      <div className="px-2 py-1">
+                                        <p className="text-[11px] text-gray-800 truncate">{item.name}</p>
+                                      </div>
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <input
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                        value={(selectedMerch.sizes || []).join(', ')}
+                        onChange={(e) =>
+                          updateSelectedMerch({
+                            sizes: e.target.value
+                              .split(',')
+                              .map((v) => v.trim())
+                              .filter(Boolean),
+                          })
+                        }
+                        placeholder="Размеры через запятую, например XS, S, M, L, XL"
+                      />
+                      <label className="flex items-center gap-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={selectedMerch.available}
+                          onChange={(e) => updateSelectedMerch({ available: e.target.checked })}
+                        />
+                        Доступен для заказа
+                      </label>
+                      <div className="flex gap-2">
+                        <button
+                          className="btn-primary"
+                          onClick={() =>
+                            runAction(
+                              { action: 'merch.updateProduct', merchProduct: selectedMerch },
+                              'Товар сохранен'
+                            )
+                          }
+                        >
+                          Сохранить
+                        </button>
+                        <button
+                          className="px-4 py-2 rounded-lg bg-red-100 text-red-700 font-medium"
+                          onClick={async () => {
+                            const confirmed = window.confirm(
+                              `Удалить товар "${selectedMerch.name}"? Это действие нельзя отменить.`
+                            )
+                            if (!confirmed) return
+                            await runAction(
+                              { action: 'merch.deleteProduct', merchProductId: selectedMerch.id },
+                              'Товар удален'
+                            )
+                            setSelectedMerchId(null)
                           }}
                         >
                           Удалить
@@ -922,7 +1736,7 @@ function AdminPageContent() {
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg"
                           value={selectedPost.video || ''}
                           onChange={(e) => updateSelectedPost({ video: e.target.value })}
-                          placeholder="video (/videos/... или https://matreshka.tv/video/...)"
+                          placeholder="video (/videos/... или https://rutube.ru/video/... )"
                         />
                         <input
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg"
@@ -1033,7 +1847,27 @@ function AdminPageContent() {
                         key={entry.relativePath}
                         className="p-3 flex items-center justify-between gap-3"
                       >
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex items-center gap-3">
+                          {entry.kind === 'file' && entry.publicUrl && isImageFilePath(entry.publicUrl) && (
+                            <a href={entry.publicUrl} target="_blank" rel="noreferrer" className="shrink-0">
+                              <img
+                                src={entry.publicUrl}
+                                alt={entry.name}
+                                className="w-14 h-14 rounded object-cover bg-gray-100 border border-gray-200"
+                              />
+                            </a>
+                          )}
+                          {entry.kind === 'file' && entry.publicUrl && !isImageFilePath(entry.publicUrl) && isVideoFilePath(entry.publicUrl) && (
+                            <a href={entry.publicUrl} target="_blank" rel="noreferrer" className="shrink-0">
+                              <video
+                                src={entry.publicUrl}
+                                className="w-14 h-14 rounded object-cover bg-black border border-gray-200"
+                                muted
+                                playsInline
+                                preload="metadata"
+                              />
+                            </a>
+                          )}
                           {entry.kind === 'dir' ? (
                             <button
                               className="text-primary-600 hover:text-primary-700 font-medium truncate"
@@ -1069,15 +1903,26 @@ function AdminPageContent() {
                           <p>{formatFileSize(entry.size)}</p>
                           <p>{new Date(entry.updatedAt).toLocaleString('ru-RU')}</p>
                           {entry.kind === 'file' && (
-                            <button
-                              type="button"
-                              onClick={() => deletePublicFile(entry.relativePath)}
-                              className="mt-2 inline-flex items-center justify-center w-7 h-7 rounded bg-red-100 text-red-700 hover:bg-red-200"
-                              title="Удалить файл"
-                              aria-label={`Удалить файл ${entry.name}`}
-                            >
-                              🗑
-                            </button>
+                            <div className="mt-2 flex items-center justify-end gap-1">
+                              <button
+                                type="button"
+                                onClick={() => renamePublicFile(entry.relativePath, entry.name)}
+                                className="inline-flex items-center justify-center w-7 h-7 rounded bg-gray-100 text-gray-700 hover:bg-gray-200"
+                                title="Переименовать файл"
+                                aria-label={`Переименовать файл ${entry.name}`}
+                              >
+                                ✏️
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => deletePublicFile(entry.relativePath)}
+                                className="inline-flex items-center justify-center w-7 h-7 rounded bg-red-100 text-red-700 hover:bg-red-200"
+                                title="Удалить файл"
+                                aria-label={`Удалить файл ${entry.name}`}
+                              >
+                                🗑
+                              </button>
+                            </div>
                           )}
                         </div>
                       </div>

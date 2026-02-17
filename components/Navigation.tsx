@@ -14,7 +14,7 @@ export default function Navigation() {
     { href: '/yoga', label: 'Йога' },
     { href: '/playlist', label: 'Плейлист' },
     { href: '/gallery', label: 'Галерея' },
-    { href: '/merch', label: 'Мерч' },
+    { href: '/merch', label: 'Одежда' },
   ]
   if (BLOG_VISIBLE) {
     navItems.splice(2, 0, { href: '/blog', label: 'Блог' })

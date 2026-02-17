@@ -27,6 +27,17 @@ function parseBasicAuth(authHeader: string | null): { user: string; pass: string
 }
 
 export function middleware(request: NextRequest) {
+  const pathname = request.nextUrl.pathname
+
+  const mediaRoots = ['/videos/', '/photos/', '/audio/', '/notgallery/', '/uploads/']
+  if (mediaRoots.some((prefix) => pathname.startsWith(prefix))) {
+    return NextResponse.rewrite(new URL(`/media${pathname}`, request.url))
+  }
+
+  if (!pathname.startsWith('/admin/')) {
+    return NextResponse.next()
+  }
+
   const expectedUser = (process.env.ADMIN_UPLOAD_USER || '').trim()
   const expectedPass = (process.env.ADMIN_UPLOAD_PASSWORD || '').trim()
 
@@ -48,5 +59,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/admin/:path*'],
+  matcher: ['/admin/:path*', '/videos/:path*', '/photos/:path*', '/audio/:path*', '/notgallery/:path*', '/uploads/:path*'],
 }

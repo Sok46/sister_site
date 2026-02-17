@@ -1,14 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import {
   addYogaVideo,
+  createMerchProduct,
   createPlaylistItem,
   createPost,
   createYogaPackage,
+  deleteMerchProduct,
   deletePlaylistItem,
   deletePost,
   deleteYogaPackage,
   deleteYogaVideo,
   getAdminContentSnapshot,
+  updateHomeGallerySelection,
+  updateHomeHero,
+  updateMerchProduct,
   updatePlaylistItem,
   updatePost,
   updateYogaPackage,
@@ -17,7 +22,9 @@ import {
 import { requireAdminToken } from '@/lib/admin-auth'
 import type { PlaylistItem } from '@/lib/playlist'
 import type { Post } from '@/lib/posts'
+import type { Product as MerchProduct } from '@/lib/merch'
 import type { VideoLesson, YogaPackage } from '@/lib/yoga'
+import type { HomeHeroSettings } from '@/lib/home-hero'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -35,6 +42,11 @@ type AdminAction =
   | 'posts.create'
   | 'posts.update'
   | 'posts.delete'
+  | 'merch.createProduct'
+  | 'merch.updateProduct'
+  | 'merch.deleteProduct'
+  | 'gallery.setHomePhotos'
+  | 'home.updateHero'
 
 interface ActionBody {
   action: AdminAction
@@ -46,6 +58,10 @@ interface ActionBody {
   playlistItemId?: string
   post?: Post
   postId?: string
+  merchProduct?: MerchProduct
+  merchProductId?: string
+  homeGallerySelection?: string[]
+  homeHero?: Partial<HomeHeroSettings>
 }
 
 async function executeAction(body: ActionBody): Promise<void> {
@@ -96,6 +112,29 @@ async function executeAction(body: ActionBody): Promise<void> {
     case 'posts.delete':
       if (!body.postId) throw new Error('postId обязателен')
       await deletePost(body.postId)
+      return
+    case 'merch.createProduct':
+      await createMerchProduct()
+      return
+    case 'merch.updateProduct':
+      if (!body.merchProduct?.id) throw new Error('merchProduct.id обязателен')
+      await updateMerchProduct(body.merchProduct.id, body.merchProduct)
+      return
+    case 'merch.deleteProduct':
+      if (!body.merchProductId) throw new Error('merchProductId обязателен')
+      await deleteMerchProduct(body.merchProductId)
+      return
+    case 'gallery.setHomePhotos':
+      if (!Array.isArray(body.homeGallerySelection)) {
+        throw new Error('homeGallerySelection обязателен')
+      }
+      await updateHomeGallerySelection(body.homeGallerySelection)
+      return
+    case 'home.updateHero':
+      if (!body.homeHero || typeof body.homeHero !== 'object') {
+        throw new Error('homeHero обязателен')
+      }
+      await updateHomeHero(body.homeHero)
       return
     default:
       throw new Error('Неизвестное действие')
