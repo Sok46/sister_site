@@ -9,11 +9,85 @@
         "title": "Йога для всех — вводное занятие",
         "duration": "25 мин",
         "videoUrl": "",
-        "rutubeUrl": "https://rutube.ru/video/private/d60cb6e26223204026c8f9c4f3a818af/?p=S0853tqYfnibwNJIRU_Dbg"
+        "rutubeId": "",
+        "rutubeToken": "",
+        "matreshkaUrl": "https://matreshka.tv/video/qgAAuEmQcgM?s=aa"
+      },
+      {
+        "title": "Йога для всех — вводное занятие рутуб",
+        "duration": "25 мин",
+        "rutubeId": "d60cb6e26223204026c8f9c4f3a818af",
+        "rutubeToken": "S0853tqYfnibwNJIRU_Dbg"
       }
     ],
     "price": 0,
-    "image": "/media/photos/main2.jpg",
+    "image": "🧘‍♀️",
+    "available": true
+  },
+  {
+    "id": "beginners-basics",
+    "name": "Йога для начинающих",
+    "level": "Начинающий",
+    "description": "Базовый курс для тех, кто только начинает свой путь в йоге. Вы освоите основные асаны, научитесь правильно дышать и почувствуете первые результаты уже после нескольких занятий.",
+    "videos": [
+      {
+        "title": "Знакомство с йогой: первые шаги",
+        "duration": "25 мин"
+      },
+      {
+        "title": "Базовые асаны стоя",
+        "duration": "30 мин"
+      },
+      {
+        "title": "Асаны сидя и наклоны",
+        "duration": "28 мин"
+      },
+      {
+        "title": "Основы дыхания (пранаяма)",
+        "duration": "20 мин"
+      },
+      {
+        "title": "Приветствие Солнцу (Сурья Намаскар)",
+        "duration": "35 мин"
+      },
+      {
+        "title": "Полная практика для новичков",
+        "duration": "40 мин"
+      }
+    ],
+    "price": 2900,
+    "image": "/notgallery/pkg-preview-20260212-172542.jpg",
+    "available": true
+  },
+  {
+    "id": "morning-practice",
+    "name": "Утренняя практика",
+    "level": "Начинающий",
+    "description": "Короткие энергичные комплексы для пробуждения и заряда бодрости. Каждое утро — новая практика, которая задаст тон вашему дню. Занимает всего 15–20 минут.",
+    "videos": [
+      {
+        "title": "Пробуждение тела: мягкая растяжка",
+        "duration": "15 мин"
+      },
+      {
+        "title": "Энергетический поток",
+        "duration": "20 мин"
+      },
+      {
+        "title": "Утренние виньясы",
+        "duration": "18 мин"
+      },
+      {
+        "title": "Дыхание и намерение на день",
+        "duration": "12 мин"
+      },
+      {
+        "title": "Бодрое утро: полный комплекс",
+        "duration": "25 мин"
+      }
+    ],
+    "price": 1900,
+    "image": "/yoga/morning.jpg",
     "available": true
   }
 ]
