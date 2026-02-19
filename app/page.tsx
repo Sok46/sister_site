@@ -9,7 +9,7 @@ import { getHomeGalleryPhotos } from '@/lib/home-gallery'
 import { getHomeHeroSettings } from '@/lib/home-hero'
 
 function getHeroPatternPath(): string | null {
-  const relativeDir = path.join('notgallery', 'mandala-patterns-gray-background')
+  const relativeDir = path.join('notgallery', 'hand-drawn-zen-doodle-pattern')
   const absoluteDir = path.join(process.cwd(), 'public', relativeDir)
   const allowed = new Set(['.png', '.jpg', '.jpeg', '.webp', '.avif', '.gif'])
 
