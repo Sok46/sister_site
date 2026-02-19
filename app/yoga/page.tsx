@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import dynamic from 'next/dynamic'
 import type { VideoQuality } from '@/components/VideoPlayer'
+import { getVideoViewKey } from '@/lib/analytics-keys'
 
 const VideoPlayer = dynamic(() => import('@/components/VideoPlayer'), { ssr: false })
 
@@ -128,6 +129,13 @@ export default function YogaPage() {
   const [loading, setLoading] = useState(true)
   const [selectedPackage, setSelectedPackage] = useState<YogaPackage | null>(null)
   const [playingVideo, setPlayingVideo] = useState<VideoLesson | null>(null)
+  const [playingVideoIndex, setPlayingVideoIndex] = useState<number | null>(null)
+  const rutubeSessionRef = useRef<{
+    packageId: string
+    video: VideoLesson
+    index: number
+    startedAt: number
+  } | null>(null)
 
   useEffect(() => {
     fetch('/api/yoga/packages')
@@ -152,6 +160,59 @@ export default function YogaPage() {
 
   const isFree = (pkg: YogaPackage) => pkg.price === 0
   const playingRutubeUrl = playingVideo ? rutubeEmbedUrl(playingVideo) : null
+
+  function trackVideoView(packageId: string, video: VideoLesson, index: number) {
+    const id = getVideoViewKey(packageId, video, index)
+    void fetch('/api/analytics/view', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'video', id }),
+      keepalive: true,
+    }).catch(() => {})
+  }
+
+  function trackVideoSession(
+    packageId: string,
+    video: VideoLesson,
+    index: number,
+    watchSeconds: number,
+    completed = false
+  ) {
+    const safeWatchSeconds = Math.floor(Math.max(0, watchSeconds))
+    if (safeWatchSeconds <= 0 && !completed) return
+    const id = getVideoViewKey(packageId, video, index)
+    void fetch('/api/analytics/view', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'video',
+        id,
+        watchSeconds: safeWatchSeconds,
+        completed,
+        incrementView: false,
+      }),
+      keepalive: true,
+    }).catch(() => {})
+  }
+
+  function stopRutubeSession() {
+    const current = rutubeSessionRef.current
+    if (!current) return
+    const watchSeconds = (Date.now() - current.startedAt) / 1000
+    trackVideoSession(current.packageId, current.video, current.index, watchSeconds, false)
+    rutubeSessionRef.current = null
+  }
+
+  function closeVideoPlayer() {
+    stopRutubeSession()
+    setPlayingVideo(null)
+    setPlayingVideoIndex(null)
+  }
+
+  function closePackageModal() {
+    closeVideoPlayer()
+    setSelectedPackage(null)
+  }
 
   return (
     <div className="min-h-screen">
@@ -271,8 +332,7 @@ export default function YogaPage() {
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
           onClick={(e) => {
             if (e.target === e.currentTarget) {
-              setSelectedPackage(null)
-              setPlayingVideo(null)
+              closePackageModal()
             }
           }}
         >
@@ -299,8 +359,7 @@ export default function YogaPage() {
                   <div className="relative p-8">
                     <button
                       onClick={() => {
-                        setSelectedPackage(null)
-                        setPlayingVideo(null)
+                        closePackageModal()
                       }}
                       className="absolute top-4 right-4 p-2 bg-white/80 hover:bg-white rounded-lg transition-colors text-gray-600"
                       aria-label="Закрыть"
@@ -360,7 +419,7 @@ export default function YogaPage() {
                     </h3>
                     <div className="flex items-center gap-3">
                       <button
-                        onClick={() => setPlayingVideo(null)}
+                        onClick={closeVideoPlayer}
                         className="text-xs text-gray-500 hover:text-gray-700 underline"
                       >
                         Свернуть
@@ -375,6 +434,11 @@ export default function YogaPage() {
                       src={playingVideo.videoUrl}
                       qualities={playingVideo.qualities as VideoQuality[] | undefined}
                       storageKey={`${selectedPackage.id}-${selectedPackage.videos.indexOf(playingVideo)}`}
+                      onSessionFinish={({ watchSeconds, completed }) => {
+                        const index = playingVideoIndex ?? selectedPackage.videos.indexOf(playingVideo)
+                        if (index < 0) return
+                        trackVideoSession(selectedPackage.id, playingVideo, index, watchSeconds, completed)
+                      }}
                     />
                   ) : (
                     /* Рутуб iframe */
@@ -411,7 +475,23 @@ export default function YogaPage() {
                           : 'bg-gray-50'
                       }`}
                       onClick={() => {
-                        if (hasVideo) setPlayingVideo(isPlaying ? null : video)
+                        if (!hasVideo) return
+                        if (isPlaying) {
+                          closeVideoPlayer()
+                          return
+                        }
+                        stopRutubeSession()
+                        setPlayingVideo(video)
+                        setPlayingVideoIndex(i)
+                        trackVideoView(selectedPackage.id, video, i)
+                        if (!video.videoUrl) {
+                          rutubeSessionRef.current = {
+                            packageId: selectedPackage.id,
+                            video,
+                            index: i,
+                            startedAt: Date.now(),
+                          }
+                        }
                       }}
                     >
                       <div className="flex items-center gap-3">

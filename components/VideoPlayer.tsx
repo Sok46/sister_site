@@ -16,6 +16,8 @@ interface VideoPlayerProps {
   qualities?: VideoQuality[]
   /** Уникальный ключ для сохранения прогресса в localStorage */
   storageKey: string
+  /** Колбэк с метриками просмотра при завершении сессии */
+  onSessionFinish?: (payload: { watchSeconds: number; completed: boolean }) => void
 }
 
 function mimeFromUrl(url: string): string {
@@ -35,7 +37,7 @@ function mimeFromUrl(url: string): string {
   }
 }
 
-export default function VideoPlayer({ src, qualities, storageKey }: VideoPlayerProps) {
+export default function VideoPlayer({ src, qualities, storageKey, onSessionFinish }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const playerRef = useRef<Plyr | null>(null)
 
@@ -155,9 +157,34 @@ export default function VideoPlayer({ src, qualities, storageKey }: VideoPlayerP
 
     // ── Сохранение прогресса ──
     let saveTimer: ReturnType<typeof setInterval> | null = null
+    let watchSeconds = 0
+    let playingStartedAt = 0
+    let completed = false
+    let sessionReported = false
+
+    const flushPlaytime = () => {
+      if (playingStartedAt <= 0) return
+      const delta = (Date.now() - playingStartedAt) / 1000
+      if (delta > 0) {
+        watchSeconds += delta
+      }
+      playingStartedAt = 0
+    }
+
+    const reportSession = () => {
+      if (sessionReported) return
+      sessionReported = true
+      const safeWatchSeconds = Math.max(0, Math.floor(watchSeconds))
+      if (!onSessionFinish) return
+      if (safeWatchSeconds <= 0 && !completed) return
+      onSessionFinish({ watchSeconds: safeWatchSeconds, completed })
+    }
 
     const startSaving = () => {
       if (saveTimer) return
+      if (playingStartedAt <= 0) {
+        playingStartedAt = Date.now()
+      }
       saveTimer = setInterval(() => {
         if (player.currentTime > 0) {
           localStorage.setItem(lsKey, String(player.currentTime))
@@ -166,6 +193,7 @@ export default function VideoPlayer({ src, qualities, storageKey }: VideoPlayerP
     }
 
     const stopSaving = () => {
+      flushPlaytime()
       if (saveTimer) {
         clearInterval(saveTimer)
         saveTimer = null
@@ -179,8 +207,10 @@ export default function VideoPlayer({ src, qualities, storageKey }: VideoPlayerP
     player.on('playing', startSaving)
     player.on('pause', stopSaving)
     player.on('ended', () => {
+      completed = true
       stopSaving()
       localStorage.removeItem(lsKey)
+      reportSession()
     })
 
     // ── Обработка смены качества ──
@@ -199,9 +229,10 @@ export default function VideoPlayer({ src, qualities, storageKey }: VideoPlayerP
 
     return () => {
       stopSaving()
+      reportSession()
       player.destroy()
     }
-  }, [src, qualities, storageKey])
+  }, [src, qualities, storageKey, onSessionFinish])
 
   return (
     <div

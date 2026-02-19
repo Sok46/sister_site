@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import Image from 'next/image'
 import PhotoLightbox from '@/components/PhotoLightbox'
+import { getPhotoViewKey } from '@/lib/analytics-keys'
 
 interface Photo {
   name: string
@@ -24,6 +25,15 @@ export default function AlbumGallery({ albumName, photos, maxVisible }: AlbumGal
   const openLightbox = (index: number) => {
     setCurrentPhotoIndex(index)
     setLightboxOpen(true)
+    const selected = photos[index]
+    if (selected?.path) {
+      void fetch('/api/analytics/view', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'photo', id: getPhotoViewKey(selected.path) }),
+        keepalive: true,
+      }).catch(() => {})
+    }
   }
 
   const closeLightbox = () => {

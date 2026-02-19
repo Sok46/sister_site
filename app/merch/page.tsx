@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { getMerchViewKey } from '@/lib/analytics-keys'
 
 /* ---------- Тип для виджета ЮKассы ---------- */
 interface YooCheckoutWidget {
@@ -201,6 +202,13 @@ export default function MerchPage() {
   }, [confirmationData, paymentStep])
 
   const openOrder = (product: Product) => {
+    void fetch('/api/analytics/view', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'merch', id: getMerchViewKey(product.id) }),
+      keepalive: true,
+    }).catch(() => {})
+
     setSelectedProduct(product)
     setSelectedSize('')
     setForm({ name: '', phone: '', address: '', comment: '' })

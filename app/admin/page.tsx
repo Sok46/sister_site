@@ -6,15 +6,16 @@ import { useSearchParams } from 'next/navigation'
 import type { PlaylistItem } from '@/lib/playlist'
 import type { Post } from '@/lib/posts'
 import type { VideoLesson, YogaPackage } from '@/lib/yoga'
+import { getMerchViewKey, getPhotoViewKey, getVideoViewKey } from '@/lib/analytics-keys'
 
-type Tab = 'home' | 'yoga' | 'playlist' | 'merch' | 'posts' | 'files' | 'bookings'
+type Tab = 'home' | 'yoga' | 'playlist' | 'merch' | 'posts' | 'analytics' | 'files' | 'bookings'
 
 interface Snapshot {
   yogaPackages: YogaPackage[]
   playlistItems: PlaylistItem[]
   posts: Post[]
   merchProducts: MerchProduct[]
-  galleryPhotos: Array<{ name: string; path: string }>
+  galleryPhotos: Array<{ name: string; path: string; album?: string }>
   homeGallerySelection: string[]
   homeHero: {
     words: [string, string, string]
@@ -22,6 +23,20 @@ interface Snapshot {
     image: string
     imageAlt: string
     intro: string
+  }
+}
+
+interface AnalyticsSnapshot {
+  videos: Record<string, number>
+  photos: Record<string, number>
+  merch: Record<string, number>
+  videoWatchSeconds: Record<string, number>
+  videoSessions: Record<string, number>
+  videoCompletions: Record<string, number>
+  updatedAt: string
+  period?: {
+    from: string | null
+    to: string | null
   }
 }
 
@@ -123,6 +138,26 @@ function uniquePhotoPaths(paths: string[]): string[] {
   return out
 }
 
+function formatAlbumLabel(value: string): string {
+  const raw = String(value || '').trim().toLowerCase()
+  if (!raw) return 'Без альбома'
+  if (raw === 'general') return 'Общие'
+  return raw
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^./, (m) => m.toUpperCase())
+}
+
+function formatWatchSeconds(value: number): string {
+  const sec = Math.max(0, Math.floor(Number(value) || 0))
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
 function defaultHomeHero() {
   return {
     words: ['ЙОГА', 'СЕМЬЯ', 'ГОРЫ'] as [string, string, string],
@@ -170,6 +205,12 @@ function AdminPageContent() {
   const [audioPickerLoading, setAudioPickerLoading] = useState(false)
   const [audioPickerError, setAudioPickerError] = useState('')
   const [audioPickerItems, setAudioPickerItems] = useState<PublicMediaEntry[]>([])
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
+  const [analyticsError, setAnalyticsError] = useState('')
+  const [analyticsData, setAnalyticsData] = useState<AnalyticsSnapshot | null>(null)
+  const [analyticsFromDate, setAnalyticsFromDate] = useState('')
+  const [analyticsToDate, setAnalyticsToDate] = useState('')
+  const [collapsedPhotoAlbums, setCollapsedPhotoAlbums] = useState<Record<string, boolean>>({})
 
   const [selectedYogaId, setSelectedYogaId] = useState<string | null>(null)
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null)
@@ -532,6 +573,48 @@ function AdminPageContent() {
     }
   }
 
+  async function loadAnalyticsStudio(override?: { from?: string; to?: string }) {
+    const fromDate = override?.from ?? analyticsFromDate
+    const toDate = override?.to ?? analyticsToDate
+
+    if (fromDate && toDate && fromDate > toDate) {
+      setAnalyticsError('Дата "С" не может быть позже даты "По"')
+      return
+    }
+
+    setAnalyticsLoading(true)
+    setAnalyticsError('')
+    try {
+      const params = new URLSearchParams()
+      if (fromDate) params.set('from', fromDate)
+      if (toDate) params.set('to', toDate)
+      const query = params.toString()
+      const response = await fetch(`/api/admin/analytics${query ? `?${query}` : ''}`, {
+        headers: {
+          'x-admin-token': token.trim(),
+        },
+      })
+      const payload = await response.json()
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || 'Не удалось загрузить аналитику')
+      }
+      setAnalyticsData({
+        videos: payload.videos || {},
+        photos: payload.photos || {},
+        merch: payload.merch || {},
+        videoWatchSeconds: payload.videoWatchSeconds || {},
+        videoSessions: payload.videoSessions || {},
+        videoCompletions: payload.videoCompletions || {},
+        updatedAt: payload.updatedAt || '',
+        period: payload.period || { from: null, to: null },
+      })
+    } catch (err) {
+      setAnalyticsError(err instanceof Error ? err.message : 'Ошибка загрузки аналитики')
+    } finally {
+      setAnalyticsLoading(false)
+    }
+  }
+
   async function runBookingsAction(body: Record<string, unknown>, successMessage: string) {
     setBookingLoading(true)
     setBookingError('')
@@ -697,6 +780,66 @@ function AdminPageContent() {
       ),
     [bookings, bookingFilterDate]
   )
+  const analyticsVideoRows = useMemo(() => {
+    if (!data) return []
+    return data.yogaPackages.flatMap((pkg) =>
+      pkg.videos.map((video, index) => {
+        const id = getVideoViewKey(pkg.id, video, index)
+        return {
+          id,
+          packageName: pkg.name,
+          title: video.title || `Видео ${index + 1}`,
+          count: analyticsData?.videos?.[id] || 0,
+          watchSeconds: analyticsData?.videoWatchSeconds?.[id] || 0,
+          sessions: analyticsData?.videoSessions?.[id] || 0,
+          completions: analyticsData?.videoCompletions?.[id] || 0,
+        }
+      })
+    )
+  }, [data, analyticsData])
+  const analyticsPhotoRows = useMemo(() => {
+    if (!data) return []
+    return data.galleryPhotos.map((photo) => {
+      const id = getPhotoViewKey(photo.path)
+      return {
+        id,
+        name: photo.name,
+        path: photo.path,
+        album: photo.album || 'general',
+        count: analyticsData?.photos?.[id] || 0,
+      }
+    })
+  }, [data, analyticsData])
+  const analyticsPhotoAlbums = useMemo(() => {
+    const grouped = new Map<string, Array<(typeof analyticsPhotoRows)[number]>>()
+    for (const row of analyticsPhotoRows) {
+      const key = row.album || 'general'
+      if (!grouped.has(key)) {
+        grouped.set(key, [])
+      }
+      grouped.get(key)!.push(row)
+    }
+    return Array.from(grouped.entries())
+      .map(([album, rows]) => ({
+        album,
+        label: formatAlbumLabel(album),
+        totalCount: rows.reduce((sum, item) => sum + item.count, 0),
+        rows: rows.sort((a, b) => b.count - a.count),
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ru'))
+  }, [analyticsPhotoRows])
+  const analyticsMerchRows = useMemo(() => {
+    if (!data) return []
+    return data.merchProducts.map((product) => {
+      const id = getMerchViewKey(product.id)
+      return {
+        id,
+        name: product.name,
+        productId: product.id,
+        count: analyticsData?.merch?.[id] || 0,
+      }
+    })
+  }, [data, analyticsData])
 
   useEffect(() => {
     setImagePickerOpen(false)
@@ -772,6 +915,17 @@ function AdminPageContent() {
                 onClick={() => setActiveTab('posts')}
               >
                 Посты
+              </button>
+              <button
+                className={`px-4 py-2 rounded-lg font-medium ${activeTab === 'analytics' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700'}`}
+                onClick={async () => {
+                  setActiveTab('analytics')
+                  if (!analyticsLoading && !analyticsData) {
+                    await loadAnalyticsStudio()
+                  }
+                }}
+              >
+                Аналитическая студия
               </button>
               <button
                 className={`px-4 py-2 rounded-lg font-medium ${activeTab === 'files' ? 'bg-primary-500 text-white' : 'bg-gray-100 text-gray-700'}`}
@@ -1775,6 +1929,188 @@ function AdminPageContent() {
                       </div>
                     </div>
                   )}
+                </div>
+              </section>
+            )}
+
+            {activeTab === 'analytics' && (
+              <section className="card p-5 space-y-5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-xl font-serif font-bold">Аналитическая студия</h2>
+                    <p className="text-sm text-gray-600">
+                      Счётчики просмотров по каждому видео, фото и товару за выбранный период.
+                    </p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Период: {analyticsData?.period?.from || analyticsFromDate || 'с начала'}
+                      {' — '}
+                      {analyticsData?.period?.to || analyticsToDate || 'сегодня'}
+                    </p>
+                    {analyticsData?.updatedAt && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        Последнее обновление: {new Date(analyticsData.updatedAt).toLocaleString('ru-RU')}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <label className="text-xs text-gray-600">
+                      С
+                      <input
+                        type="date"
+                        className="mt-1 block px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        value={analyticsFromDate}
+                        onChange={(e) => setAnalyticsFromDate(e.target.value)}
+                      />
+                    </label>
+                    <label className="text-xs text-gray-600">
+                      По
+                      <input
+                        type="date"
+                        className="mt-1 block px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                        value={analyticsToDate}
+                        onChange={(e) => setAnalyticsToDate(e.target.value)}
+                      />
+                    </label>
+                    <button
+                      className="px-4 py-2 rounded-lg bg-primary-500 text-white font-medium disabled:opacity-60"
+                      disabled={analyticsLoading || !token.trim()}
+                      onClick={() => {
+                        void loadAnalyticsStudio()
+                      }}
+                    >
+                      {analyticsLoading ? 'Загрузка...' : 'Применить период'}
+                    </button>
+                    <button
+                      className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 font-medium disabled:opacity-60"
+                      disabled={analyticsLoading || !token.trim()}
+                      onClick={async () => {
+                        setAnalyticsFromDate('')
+                        setAnalyticsToDate('')
+                        await loadAnalyticsStudio({ from: '', to: '' })
+                      }}
+                    >
+                      Сбросить
+                    </button>
+                  </div>
+                </div>
+
+                {analyticsError && <p className="text-sm text-red-600">{analyticsError}</p>}
+
+                <div className="grid lg:grid-cols-3 gap-4">
+                  <div className="border rounded-lg p-3">
+                    <h3 className="font-semibold text-gray-900 mb-2">
+                      Видео ({analyticsVideoRows.length})
+                    </h3>
+                    {analyticsVideoRows.length === 0 ? (
+                      <p className="text-sm text-gray-500">Видео пока нет.</p>
+                    ) : (
+                      <div className="max-h-[45vh] overflow-auto space-y-2">
+                        {analyticsVideoRows
+                          .sort((a, b) => b.count - a.count)
+                          .map((row) => (
+                            <div key={row.id} className="rounded border p-2">
+                              <p className="text-xs text-gray-500 truncate">{row.packageName}</p>
+                              <p className="text-sm text-gray-900 truncate">{row.title}</p>
+                              <p className="text-xs text-primary-700 mt-1">
+                                Просмотров: <span className="font-semibold">{row.count}</span>
+                              </p>
+                              <p className="text-xs text-gray-600 mt-1">
+                                Сессий: <span className="font-semibold">{row.sessions}</span>
+                              </p>
+                              <p className="text-xs text-gray-600 mt-1">
+                                Ср. время просмотра:{' '}
+                                <span className="font-semibold">
+                                  {row.sessions > 0
+                                    ? formatWatchSeconds(row.watchSeconds / row.sessions)
+                                    : '0:00'}
+                                </span>
+                              </p>
+                              <p className="text-xs text-gray-600 mt-1">
+                                Досмотров:{' '}
+                                <span className="font-semibold">
+                                  {row.completions}
+                                  {row.sessions > 0
+                                    ? ` (${Math.round((row.completions / row.sessions) * 100)}%)`
+                                    : ''}
+                                </span>
+                              </p>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="border rounded-lg p-3">
+                    <h3 className="font-semibold text-gray-900 mb-2">
+                      Фотографии ({analyticsPhotoRows.length})
+                    </h3>
+                    {analyticsPhotoRows.length === 0 ? (
+                      <p className="text-sm text-gray-500">Фото пока нет.</p>
+                    ) : (
+                      <div className="max-h-[45vh] overflow-auto space-y-2">
+                        {analyticsPhotoAlbums.map((albumGroup) => {
+                          const isCollapsed = collapsedPhotoAlbums[albumGroup.album] ?? true
+                          return (
+                            <div key={albumGroup.album} className="rounded border">
+                              <button
+                                type="button"
+                                className="w-full flex items-center justify-between gap-2 px-3 py-2 hover:bg-gray-50 text-left"
+                                onClick={() =>
+                                  setCollapsedPhotoAlbums((prev) => ({
+                                    ...prev,
+                                    [albumGroup.album]: !isCollapsed,
+                                  }))
+                                }
+                              >
+                                <span className="text-sm font-medium text-gray-900 truncate">
+                                  {isCollapsed ? '▶' : '▼'} {albumGroup.label} ({albumGroup.rows.length})
+                                </span>
+                                <span className="text-xs text-primary-700 whitespace-nowrap">
+                                  Просмотров: <span className="font-semibold">{albumGroup.totalCount}</span>
+                                </span>
+                              </button>
+                              {!isCollapsed && (
+                                <div className="px-2 pb-2 space-y-2">
+                                  {albumGroup.rows.map((row) => (
+                                    <div key={row.id} className="rounded border p-2">
+                                      <p className="text-sm text-gray-900 truncate">{row.name}</p>
+                                      <p className="text-xs text-gray-500 truncate">{row.path}</p>
+                                      <p className="text-xs text-primary-700 mt-1">
+                                        Просмотров: <span className="font-semibold">{row.count}</span>
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="border rounded-lg p-3">
+                    <h3 className="font-semibold text-gray-900 mb-2">
+                      Одежда ({analyticsMerchRows.length})
+                    </h3>
+                    {analyticsMerchRows.length === 0 ? (
+                      <p className="text-sm text-gray-500">Товары пока не добавлены.</p>
+                    ) : (
+                      <div className="max-h-[45vh] overflow-auto space-y-2">
+                        {analyticsMerchRows
+                          .sort((a, b) => b.count - a.count)
+                          .map((row) => (
+                            <div key={row.id} className="rounded border p-2">
+                              <p className="text-sm text-gray-900 truncate">{row.name}</p>
+                              <p className="text-xs text-gray-500 truncate">{row.productId}</p>
+                              <p className="text-xs text-primary-700 mt-1">
+                                Просмотров: <span className="font-semibold">{row.count}</span>
+                              </p>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </section>
             )}

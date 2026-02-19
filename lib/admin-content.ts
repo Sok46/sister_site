@@ -12,6 +12,7 @@ import { getHomeHeroSettings, setHomeHeroSettings, type HomeHeroSettings } from 
 export interface HomeGalleryPhotoOption {
   name: string
   path: string
+  album: string
 }
 
 export interface AdminContentSnapshot {
@@ -78,6 +79,7 @@ export async function getAdminContentSnapshot(): Promise<AdminContentSnapshot> {
   const galleryPhotos: HomeGalleryPhotoOption[] = getAllPhotos().map((photo: Photo) => ({
     name: photo.name,
     path: photo.path,
+    album: photo.album || 'general',
   }))
 
   return {

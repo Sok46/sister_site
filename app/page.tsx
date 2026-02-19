@@ -1,18 +1,48 @@
 import Link from 'next/link'
 import Image from 'next/image'
+import fs from 'fs'
+import path from 'path'
 import RotatingWords from '@/components/RotatingWords'
 import BookingCalendar from '@/components/BookingCalendar'
 import AlbumGallery from '@/components/AlbumGallery'
 import { getHomeGalleryPhotos } from '@/lib/home-gallery'
 import { getHomeHeroSettings } from '@/lib/home-hero'
 
+function getHeroPatternPath(): string | null {
+  const relativeDir = path.join('notgallery', 'hand-drawn-zen-doodle-pattern')
+  const absoluteDir = path.join(process.cwd(), 'public', relativeDir)
+  const allowed = new Set(['.png', '.jpg', '.jpeg', '.webp', '.avif', '.gif'])
+
+  try {
+    if (!fs.existsSync(absoluteDir)) return null
+    const names = fs.readdirSync(absoluteDir)
+    const imageName = names.find((name) => allowed.has(path.extname(name).toLowerCase()))
+    if (!imageName) return null
+    return `/${relativeDir.replace(/\\/g, '/')}/${imageName}`
+  } catch {
+    return null
+  }
+}
+
 export default async function Home() {
   const [photos, hero] = await Promise.all([getHomeGalleryPhotos(), getHomeHeroSettings()])
+  const heroPatternPath = getHeroPatternPath()
 
   return (
     <div>
       {/* Hero Section */}
       <section className="relative min-h-[90vh] flex items-center justify-center overflow-hidden bg-gradient-to-br from-primary-100/50 to-accent-100/50">
+        {heroPatternPath && (
+          <div
+            className="absolute inset-0 opacity-20 pointer-events-none"
+            style={{
+              backgroundImage: `url("${heroPatternPath}")`,
+              backgroundRepeat: 'repeat',
+              backgroundSize: '520px 520px',
+            }}
+            aria-hidden="true"
+          />
+        )}
         <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
           <h1 className="text-5xl md:text-7xl font-serif font-bold text-gray-900 mb-6">
             <RotatingWords words={hero.words} />
