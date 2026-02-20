@@ -8,6 +8,8 @@ import AlbumGallery from '@/components/AlbumGallery'
 import { getHomeGalleryPhotos } from '@/lib/home-gallery'
 import { getHomeHeroSettings } from '@/lib/home-hero'
 
+export const dynamic = 'force-dynamic'
+
 function getHeroPatternPath(): string | null {
   const relativeDir = path.join('notgallery', 'hand-drawn-zen-doodle-pattern')
   const absoluteDir = path.join(process.cwd(), 'public', relativeDir)
