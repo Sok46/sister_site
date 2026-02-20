@@ -1566,8 +1566,12 @@ function AdminPageContent() {
                         <button
                           className="px-4 py-2 rounded-lg bg-red-100 text-red-700 font-medium"
                           onClick={async () => {
+                            const confirmed = window.confirm(
+                              `Удалить элемент "${selectedPlaylist.title}"? Это действие нельзя отменить.`
+                            )
+                            if (!confirmed) return
                             await runAction(
-                              { action: 'playlist.deleteItem', playlistItemId: selectedPlaylist.id },
+                              { action: 'playlist.deleteItem', playlistItemId: selectedPlaylistId || selectedPlaylist.id },
                               'Элемент удален'
                             )
                             setSelectedPlaylistId(null)

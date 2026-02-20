@@ -25,12 +25,7 @@ export default function PlaylistPage() {
 
         {audios.length === 0 ? (
           <div className="text-center py-12">
-            <p className="text-gray-600 mb-4">
-              Плейлист пока пуст. Добавьте файлы в папку <code className="bg-gray-100 px-2 py-1 rounded">content/playlist/</code>
-            </p>
-            <p className="text-sm text-gray-500">
-              См. файл <code className="bg-gray-100 px-2 py-1 rounded">PLAYLIST_GUIDE.md</code> для инструкций
-            </p>
+            <p className="text-gray-600 mb-4">К сожалению пока что ничего нет, но скоро появится</p>
           </div>
         ) : (
           <section>

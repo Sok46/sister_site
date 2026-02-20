@@ -281,11 +281,35 @@ export async function updatePlaylistItem(item: PlaylistItem): Promise<void> {
 }
 
 export async function deletePlaylistItem(id: string): Promise<void> {
-  const filePath = path.join(PLAYLIST_DIR, `${id}.json`)
+  const safeId = String(id || '').trim()
+  if (!safeId) throw new Error('playlistItemId обязателен')
+
+  const filePath = path.join(PLAYLIST_DIR, `${safeId}.json`)
   try {
     await fs.unlink(filePath)
+    return
   } catch {
-    // ignore if missing
+    // fallback: иногда id внутри файла не совпадает с именем файла
+  }
+
+  let removed = 0
+  const entries = await fs.readdir(PLAYLIST_DIR).catch(() => [])
+  for (const entry of entries) {
+    if (!entry.endsWith('.json')) continue
+    const fullPath = path.join(PLAYLIST_DIR, entry)
+    try {
+      const raw = await fs.readFile(fullPath, 'utf8')
+      const parsed = JSON.parse(raw) as Partial<PlaylistItem>
+      if (String(parsed.id || '').trim() !== safeId) continue
+      await fs.unlink(fullPath)
+      removed += 1
+    } catch {
+      // пропускаем битые/недоступные файлы
+    }
+  }
+
+  if (removed === 0) {
+    throw new Error('Элемент плейлиста не найден')
   }
 }
 
