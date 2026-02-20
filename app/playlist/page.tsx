@@ -2,6 +2,8 @@ import { getAllPlaylistItems } from '@/lib/playlist'
 import AudioPlayer from '@/components/AudioPlayer'
 import Link from 'next/link'
 
+export const dynamic = 'force-dynamic'
+
 export default function PlaylistPage() {
   const allItems = getAllPlaylistItems()
   const audios = allItems.filter((item) => item.type === 'audio')

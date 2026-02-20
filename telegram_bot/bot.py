@@ -326,7 +326,7 @@ def run_site_rebuild(chat_id: int) -> None:
 
 def run_site_restart(chat_id: int) -> None:
     try:
-        bot.send_message(chat_id, "🔄 Обновляю сайт: pm2 restart sister-site")
+        bot.send_message(chat_id, "🔄 Обновляю сайт: pm2 restart sister-site", parse_mode=None)
         restart_code, restart_output = _run_cmd(["pm2", "restart", "sister-site"], timeout=120)
         if restart_code != 0:
             bot.send_message(
@@ -334,13 +334,15 @@ def run_site_restart(chat_id: int) -> None:
                 "❌ Не удалось обновить сайт (ошибка PM2).\n\n"
                 f"Код выхода: {restart_code}\n\n"
                 f"Лог PM2:\n{restart_output}",
+                parse_mode=None,
             )
             return
 
         bot.send_message(
             chat_id,
-            "✅ Сайт обновлен: процесс `sister-site` перезапущен.\n\n"
+            "✅ Сайт обновлен: процесс sister-site перезапущен.\n\n"
             f"Лог PM2:\n{restart_output}",
+            parse_mode=None,
         )
     except subprocess.TimeoutExpired:
         bot.send_message(chat_id, "⏱️ Перезапуск выполнялся слишком долго и был остановлен по таймауту.")
